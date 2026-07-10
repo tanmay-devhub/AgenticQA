@@ -8,11 +8,20 @@ a stronger reasoner for planning:
     planner  -- decides which mutant to attack next and which tier/technique
                 to reach for. Default: Gemini 2.5 Pro via litellm.
 
-Both go through litellm, so any provider can be swapped by editing config only.
-Nothing here is wired to real calls yet -- Phase 0 scaffolding.
+Both go through litellm, so any provider can be swapped by editing config or by
+setting env vars (see below) -- no code changes needed.
+
+Env-var overrides (checked at ``AppConfig()`` construction):
+    MUTAGEN_CODEGEN_MODEL / MUTAGEN_PLANNER_MODEL
+    MUTAGEN_CODEGEN_API_BASE / MUTAGEN_PLANNER_API_BASE
+    MUTAGEN_CODEGEN_API_KEY_ENV / MUTAGEN_PLANNER_API_KEY_ENV
+This is the escape hatch for outages: if Gemini is rate-limited, point the
+planner at Ollama Cloud without editing code.
 """
 
 from __future__ import annotations
+
+import os
 
 from pydantic import BaseModel, Field
 
@@ -27,22 +36,42 @@ class LLMRole(BaseModel):
     max_tokens: int = 4096
 
 
+def _apply_env_overrides(role: LLMRole, prefix: str) -> LLMRole:
+    """Overlay MUTAGEN_<PREFIX>_{MODEL,API_BASE,API_KEY_ENV} onto ``role``."""
+    m = os.environ.get(f"MUTAGEN_{prefix}_MODEL")
+    b = os.environ.get(f"MUTAGEN_{prefix}_API_BASE")
+    k = os.environ.get(f"MUTAGEN_{prefix}_API_KEY_ENV")
+    if m:
+        role.model = m
+    if b:
+        role.api_base = b
+    if k:
+        role.api_key_env = k
+    return role
+
+
 class LLMConfig(BaseModel):
     codegen: LLMRole = Field(
-        default_factory=lambda: LLMRole(
-            model="ollama/qwen3-coder:480b-cloud",
-            api_base="https://ollama.com",
-            api_key_env="OLLAMA_API_KEY",
-            temperature=0.2,
-            max_tokens=8192,
+        default_factory=lambda: _apply_env_overrides(
+            LLMRole(
+                model="ollama/qwen3-coder:480b-cloud",
+                api_base="https://ollama.com",
+                api_key_env="OLLAMA_API_KEY",
+                temperature=0.2,
+                max_tokens=8192,
+            ),
+            "CODEGEN",
         )
     )
     planner: LLMRole = Field(
-        default_factory=lambda: LLMRole(
-            model="gemini/gemini-2.5-pro",
-            api_key_env="GEMINI_API_KEY",
-            temperature=0.1,
-            max_tokens=2048,
+        default_factory=lambda: _apply_env_overrides(
+            LLMRole(
+                model="gemini/gemini-2.5-pro",
+                api_key_env="GEMINI_API_KEY",
+                temperature=0.1,
+                max_tokens=2048,
+            ),
+            "PLANNER",
         )
     )
 
@@ -65,7 +94,9 @@ class MutationConfig(BaseModel):
 
 
 class LoopBudget(BaseModel):
-    max_rounds: int = 1        # Phase 1 = one-shot
+    # Phase 2: multi-round. Round 1 = T1; rounds 2..N = T2 driven by classified
+    # survivors. Set to 1 (or pass `--max-rounds 1`) for Phase-1 one-shot mode.
+    max_rounds: int = 3
     plateau_delta: float = 0.02
     wall_clock_s: int = 600
 

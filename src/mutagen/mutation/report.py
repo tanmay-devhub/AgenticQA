@@ -7,6 +7,21 @@ from typing import Literal
 
 MutantStatus = Literal["killed", "survived", "timeout", "suspicious", "skipped", "unknown"]
 
+# Coarse mutation categories inferred from the unified diff. The planner maps
+# these to test techniques -- e.g. `comparison` -> boundary tests, `arithmetic`
+# / `constant` -> off-by-one / value substitution, `return` -> equality on
+# specific inputs. `other` is the residual bucket.
+MutationKind = Literal[
+    "comparison",   # <, <=, >, >=, ==, !=, is, is not, in, not in
+    "arithmetic",   # + - * / // % **
+    "constant",     # numeric / bool literal changed
+    "return",       # return X -> return None / different value
+    "boolean",      # and/or/not swaps
+    "keyword",      # break/continue/pass/raise swaps
+    "call",         # function-call arg or callee change
+    "other",
+]
+
 
 @dataclass
 class Mutant:
@@ -14,7 +29,18 @@ class Mutant:
     file: str | None
     line: int | None
     status: MutantStatus
-    diff: str | None = None  # unified diff of the mutation, if we collected it
+    diff: str | None = None       # unified diff of the mutation, if we collected it
+    kind: MutationKind = "other"  # coarse category inferred from the diff
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "file": self.file,
+            "line": self.line,
+            "status": self.status,
+            "kind": self.kind,
+            "diff": self.diff,
+        }
 
 
 @dataclass
@@ -47,3 +73,16 @@ class MutationReport:
         if self.disabled_types:
             base += f"\nfiltered mutation types: {','.join(self.disabled_types)}"
         return base
+
+    def to_dict(self) -> dict:
+        return {
+            "total": self.total,
+            "killed": self.killed,
+            "survived": self.survived,
+            "timeout": self.timeout,
+            "suspicious": self.suspicious,
+            "skipped": self.skipped,
+            "kill_rate": self.kill_rate,
+            "disabled_types": list(self.disabled_types),
+            "survivors": [m.to_dict() for m in self.survivors],
+        }

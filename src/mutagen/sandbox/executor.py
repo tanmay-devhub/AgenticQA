@@ -67,9 +67,27 @@ def run(
     )
 
 
-def run_pytest(cwd: Path, *, timeout_s: int, extra_args: list[str] | None = None) -> RunResult:
-    """Run pytest inside ``cwd`` using the current Python interpreter."""
+def run_pytest(
+    cwd: Path,
+    *,
+    timeout_s: int,
+    extra_args: list[str] | None = None,
+    coverage_source: str | None = None,
+) -> RunResult:
+    """Run pytest inside ``cwd`` using the current Python interpreter.
+
+    When ``coverage_source`` is set (e.g. ``"target"``), coverage.py is engaged
+    and a ``coverage.json`` file is written next to ``cwd``. The loop reads it
+    to feed uncovered lines back to the planner. Coverage is best-effort: if
+    pytest-cov is unavailable, the outer caller should fall through gracefully.
+    """
     cmd = [sys.executable, "-m", "pytest", "-q"]
+    if coverage_source:
+        cmd += [
+            f"--cov={coverage_source}",
+            "--cov-report=json:coverage.json",
+            "--cov-report=",
+        ]
     if extra_args:
         cmd.extend(extra_args)
     return run(cmd, cwd=cwd, timeout_s=timeout_s)

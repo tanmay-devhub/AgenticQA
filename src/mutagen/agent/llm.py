@@ -11,7 +11,7 @@ local Ollama model, e.g. `ollama/qwen3-coder:30b`, without code changes.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import litellm
@@ -29,9 +29,61 @@ class LLMResponse:
     model: str
 
 
+@dataclass
+class RoleUsage:
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
+@dataclass
+class Usage:
+    codegen: RoleUsage = field(default_factory=RoleUsage)
+    planner: RoleUsage = field(default_factory=RoleUsage)
+
+    def record(self, role: Role, resp: LLMResponse) -> None:
+        bucket: RoleUsage = getattr(self, role)
+        bucket.calls += 1
+        bucket.prompt_tokens += resp.prompt_tokens or 0
+        bucket.completion_tokens += resp.completion_tokens or 0
+
+    def snapshot(self) -> Usage:
+        return Usage(
+            codegen=RoleUsage(
+                calls=self.codegen.calls,
+                prompt_tokens=self.codegen.prompt_tokens,
+                completion_tokens=self.codegen.completion_tokens,
+            ),
+            planner=RoleUsage(
+                calls=self.planner.calls,
+                prompt_tokens=self.planner.prompt_tokens,
+                completion_tokens=self.planner.completion_tokens,
+            ),
+        )
+
+    def delta(self, previous: Usage) -> Usage:
+        return Usage(
+            codegen=RoleUsage(
+                calls=self.codegen.calls - previous.codegen.calls,
+                prompt_tokens=self.codegen.prompt_tokens - previous.codegen.prompt_tokens,
+                completion_tokens=self.codegen.completion_tokens - previous.codegen.completion_tokens,
+            ),
+            planner=RoleUsage(
+                calls=self.planner.calls - previous.planner.calls,
+                prompt_tokens=self.planner.prompt_tokens - previous.planner.prompt_tokens,
+                completion_tokens=self.planner.completion_tokens - previous.planner.completion_tokens,
+            ),
+        )
+
+
 class LLM:
     def __init__(self, cfg: AppConfig) -> None:
         self._cfg = cfg
+        self.usage = Usage()
 
     def complete(self, role: Role, *, system: str, user: str) -> LLMResponse:
         r: LLMRole = getattr(self._cfg.llm, role)
@@ -58,9 +110,11 @@ class LLM:
         resp = litellm.completion(**kwargs)
         choice = resp["choices"][0]["message"]["content"]
         usage = resp.get("usage") or {}
-        return LLMResponse(
+        out = LLMResponse(
             text=choice or "",
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
             model=r.model,
         )
+        self.usage.record(role, out)
+        return out
