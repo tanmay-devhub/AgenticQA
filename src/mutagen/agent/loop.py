@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from mutagen.agent import debrief as debrief_mod
 from mutagen.agent.classifier import classify_survivors
 from mutagen.agent.llm import LLM, Usage
 from mutagen.agent.planner import plan_specs
@@ -38,6 +39,10 @@ class RoundResult:
     usage: Usage = field(default_factory=Usage)  # LLM tokens spent DURING this round
     repaired: bool = False           # true if we regenerated tests after a pytest failure
     coverage: FileCoverage | None = None  # coverage for target.py (best-effort)
+    # The pytest run BEFORE any repair. Populated iff pytest failed and we
+    # attempted a repair; useful for the round debrief so the file records
+    # what the LLM's first output actually broke on.
+    initial_pytest_result: RunResult | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -156,24 +161,39 @@ def _run_round(
     raw pytest failure without triggering a repair attempt.
     """
     t0 = time.monotonic()
+    backend = cfg.sandbox.backend
     pytest_res = run_pytest(
-        workdir, timeout_s=cfg.sandbox.pytest_timeout_s, coverage_source="target"
+        workdir, timeout_s=cfg.sandbox.pytest_timeout_s,
+        coverage_source="target", backend=backend,
     )
     pytest_ok = pytest_res.returncode == 0
     repaired = False
+    initial_pytest_result: RunResult | None = None
 
     if not pytest_ok and llm is not None:
+        # Snapshot the failing pytest result BEFORE we overwrite it with the
+        # post-repair result -- the debrief file wants both sides.
+        initial_pytest_result = pytest_res
         target_src = workdir / "target.py"
-        fixed = repair_mod.repair(
-            llm,
-            target_source=target_src,
-            tests_path=tests_path,
-            pytest_stderr=(pytest_res.stderr or "") + "\n" + (pytest_res.stdout or ""),
-        )
-        tests_path.write_text(fixed, encoding="utf-8")
-        pytest_res = run_pytest(workdir, timeout_s=cfg.sandbox.pytest_timeout_s)
-        pytest_ok = pytest_res.returncode == 0
-        repaired = True
+        # Up to MAX_REPAIR_ATTEMPTS shots; attempt 1 bumps temperature +
+        # nudges the model to reconsider its assumptions instead of
+        # re-emitting the same broken assertions.
+        for attempt in range(repair_mod.MAX_REPAIR_ATTEMPTS):
+            fixed = repair_mod.repair(
+                llm,
+                target_source=target_src,
+                tests_path=tests_path,
+                pytest_stderr=(pytest_res.stderr or "") + "\n" + (pytest_res.stdout or ""),
+                attempt=attempt,
+            )
+            tests_path.write_text(fixed, encoding="utf-8")
+            pytest_res = run_pytest(
+                workdir, timeout_s=cfg.sandbox.pytest_timeout_s, backend=backend,
+            )
+            pytest_ok = pytest_res.returncode == 0
+            repaired = True
+            if pytest_ok:
+                break
 
     report: MutationReport | None = None
     if pytest_ok:
@@ -182,6 +202,7 @@ def _run_round(
             target_rel="target.py",
             run_timeout_s=cfg.sandbox.mutmut_timeout_s,
             disabled_types=cfg.mutation.disabled_types,
+            backend=backend,
         )
     coverage = load_coverage(workdir).get("target.py") if pytest_ok else None
     return RoundResult(
@@ -194,6 +215,7 @@ def _run_round(
         elapsed_s=time.monotonic() - t0,
         repaired=repaired,
         coverage=coverage,
+        initial_pytest_result=initial_pytest_result,
     )
 
 
@@ -245,6 +267,7 @@ def _drive_loop(
     round1.usage = llm.usage.delta(usage_before)
     result.rounds.append(round1)
     _persist_round(workdir, round1)
+    debrief_mod.write_round_body(workdir, round1)
 
     if not round1.pytest_ok:
         result.stopped_reason = "pytest failed in round 1"
@@ -278,11 +301,18 @@ def _drive_loop(
         prev_cov = result.rounds[-1].coverage
         missing = prev_cov.missing_lines if prev_cov else None
         specs = plan_specs(classified, missing_lines=missing)
+        tier = next_tier
+        # Record what round i-1 is handing off to round i, even if the
+        # planner produced no specs (that itself is useful debrief signal).
+        debrief_mod.append_handoff(
+            workdir, result.rounds[-1].index,
+            next_round_index=i, next_tier=tier,
+            classified=classified, specs=specs,
+        )
         if not specs:
             result.stopped_reason = "no real_gap survivors to plan against"
             return result
 
-        tier = next_tier
         if tier == 2:
             source = tier2.generate(llm, target_source=target_src, specs=specs)
         else:
@@ -294,6 +324,7 @@ def _drive_loop(
         r.usage = llm.usage.delta(usage_before)
         result.rounds.append(r)
         _persist_round(workdir, r)
+        debrief_mod.write_round_body(workdir, r)
 
         if not r.pytest_ok:
             result.stopped_reason = f"pytest failed in round {i}"

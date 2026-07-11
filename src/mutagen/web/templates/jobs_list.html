@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}jobs — mutagen{% endblock %}
+{% block body %}
+<p class="breadcrumb"><a href="/runs">runs</a> / jobs</p>
+<h1>jobs</h1>
+<p><a href="/" class="btn">+ new run</a></p>
+
+{% if not jobs %}
+<p class="muted">no jobs. <a href="/">start one</a>.</p>
+{% else %}
+<table class="grid">
+  <thead>
+    <tr>
+      <th>target</th>
+      <th>status</th>
+      <th class="num">rounds</th>
+      <th class="num">kill rate</th>
+      <th>workdir</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for j in jobs %}
+    <tr>
+      <td>{{ j.target_name }}</td>
+      <td><span class="pill {% if j.status == 'done' %}good{% elif j.status == 'failed' %}bad{% endif %}">{{ j.status }}</span></td>
+      <td class="num">{{ j.rounds_done }}/{{ j.max_rounds }}</td>
+      <td class="num {% if j.final_kill_rate and j.final_kill_rate >= 0.9 %}good{% endif %}">{{ fmt_pct(j.final_kill_rate) }}</td>
+      <td class="mono small">{{ j.workdir_name }}</td>
+      <td>
+        <a href="/jobs/{{ j.id }}">detail →</a>
+        {% if j.status in ('queued','running') or j.status == 'done' %}
+          {% if j.status == 'done' %}<a href="/runs/{{ j.workdir_name }}">artifacts →</a>{% endif %}
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<script>
+// Cheap auto-refresh -- jobs list is small.
+setTimeout(() => location.reload(), 4000);
+</script>
+{% endblock %}

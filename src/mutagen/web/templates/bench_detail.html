@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} — benchmark — mutagen{% endblock %}
+{% block body %}
+<p class="breadcrumb"><a href="/runs">runs</a> / benchmark / {{ name }}</p>
+<h1>benchmark: {{ name }}</h1>
+
+<div class="stat-row">
+  <div class="stat">
+    <div class="label">targets</div>
+    <div class="value">{{ entries|length }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">mean kill rate</div>
+    <div class="value {% if bench.mean_kill_rate and bench.mean_kill_rate >= 0.9 %}good{% endif %}">
+      {{ fmt_pct(bench.mean_kill_rate) }}
+    </div>
+  </div>
+  <div class="stat">
+    <div class="label">mean seeded catch</div>
+    <div class="value {% if bench.mean_seeded_bug_catch_rate and bench.mean_seeded_bug_catch_rate >= 0.9 %}good{% endif %}">
+      {{ fmt_pct(bench.mean_seeded_bug_catch_rate) }}
+    </div>
+  </div>
+</div>
+
+<h2>per-target</h2>
+<table class="grid">
+  <thead>
+    <tr>
+      <th>target</th>
+      <th>stopped</th>
+      <th class="num">kill rate</th>
+      <th class="num">seeded bugs</th>
+      <th class="num">rounds</th>
+      <th class="num">tokens</th>
+      <th class="num">wall s</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for e in entries %}
+    {% set r = e.result %}
+    {% set stopped = (r.stopped_reason if r else (e.error or "no result")) %}
+    {% set kr = r.final_kill_rate if r else None %}
+    {% set caught = e.seeded_bugs|selectattr("caught")|list|length %}
+    {% set seeded_total = e.seeded_bugs|length %}
+    {% set total_usage = (r.total_usage if r else {}) %}
+    {% set cg = total_usage.get('codegen', {}) if r else {} %}
+    {% set pl = total_usage.get('planner', {}) if r else {} %}
+    {% set tokens = (cg.get('prompt_tokens', 0) or 0) + (cg.get('completion_tokens', 0) or 0)
+                  + (pl.get('prompt_tokens', 0) or 0) + (pl.get('completion_tokens', 0) or 0) if r else None %}
+    <tr>
+      <td class="mono small">{{ e.target }}</td>
+      <td class="small">{{ stopped }}</td>
+      <td class="num {% if kr and kr >= 0.9 %}good{% endif %}">{{ fmt_pct(kr) }}</td>
+      <td class="num">
+        {% if seeded_total > 0 %}
+          <span class="{% if caught == seeded_total %}good{% endif %}">{{ caught }}/{{ seeded_total }}</span>
+        {% else %}-{% endif %}
+      </td>
+      <td class="num">{% if r %}{{ r.rounds|length }}{% else %}-{% endif %}</td>
+      <td class="num">{{ fmt_num(tokens) }}</td>
+      <td class="num">{{ "%.1f"|format(e.wall_clock_s or 0) }}</td>
+      <td>
+        {% set workdir = e.workdir|string %}
+        {% set slug = workdir.replace('\\', '/').rstrip('/').split('/')[-1] %}
+        <a href="/runs/{{ slug }}">view →</a>
+      </td>
+    </tr>
+
+    {% if e.seeded_bugs %}
+    <tr class="sub"><td colspan="8">
+      <table class="inline">
+        <thead><tr><th>bug</th><th>caught</th><th>description</th></tr></thead>
+        <tbody>
+          {% for s in e.seeded_bugs %}
+          <tr>
+            <td class="mono small">{{ s.bug_id }}</td>
+            <td>{% if s.caught %}<span class="pill good">yes</span>{% else %}<span class="pill bad">no</span>{% endif %}</td>
+            <td class="small">{{ s.description }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </td></tr>
+    {% endif %}
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

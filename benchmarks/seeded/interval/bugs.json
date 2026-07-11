@@ -1,0 +1,5 @@
+{
+  "bug_1.py": "strict '<' instead of '<='; touching endpoints wrongly not treated as overlap",
+  "bug_2.py": "reversed-interval guard removed; malformed inputs silently succeed",
+  "bug_3.py": "only one side of the two-sided overlap check remains; false positive on disjoint intervals"
+}

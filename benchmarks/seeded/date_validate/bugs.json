@@ -1,0 +1,5 @@
+{
+  "bug_1.py": "leap-year rule reduces to y % 4 == 0; accepts Feb 29 in 1900/2100",
+  "bug_2.py": "day-zero accepted (missing d < 1 guard)",
+  "bug_3.py": "month upper bound relaxed from 12 to 13; month 13 crashes with IndexError"
+}

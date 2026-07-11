@@ -77,7 +77,11 @@ class LLMConfig(BaseModel):
 
 
 class SandboxLimits(BaseModel):
-    backend: str = "subprocess"  # "subprocess" | "docker"
+    # Env var MUTAGEN_SANDBOX_BACKEND=docker flips execution into the
+    # container backend without any code or CLI-flag change.
+    backend: str = Field(
+        default_factory=lambda: os.environ.get("MUTAGEN_SANDBOX_BACKEND", "subprocess"),
+    )  # "subprocess" | "docker"
     pytest_timeout_s: int = 30
     mutmut_timeout_s: int = 120
     memory_mb: int | None = None

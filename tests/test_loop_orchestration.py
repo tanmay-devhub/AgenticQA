@@ -62,9 +62,9 @@ def _report(*, killed: int, survived: int, survivor_diffs: list[str] | None = No
 
 def test_loop_stops_when_pytest_fails_in_round_1(tmp_path, monkeypatch):
     target = _write_target(tmp_path)
-    # First codegen call = initial tests. Second = repair attempt.
+    # Codegen calls: initial tests + up to MAX_REPAIR_ATTEMPTS repair attempts.
     llm = FakeLLM(
-        responses={"codegen": ["def test_x(): assert True\n", "def test_x(): assert True\n"]}
+        responses={"codegen": ["def test_x(): assert True\n"] * 3}
     )
     monkeypatch.setattr(loop_mod, "run_pytest", lambda *_a, **_kw: _fail("collection error"))
     monkeypatch.setattr(loop_mod, "run_mutmut", lambda **_kw: (_report(killed=0, survived=0), _ok()))
@@ -81,6 +81,7 @@ def test_loop_stops_when_pytest_fails_in_round_1(tmp_path, monkeypatch):
 
 
 def test_loop_repair_rescues_round_when_second_pytest_passes(tmp_path, monkeypatch):
+    """First repair fixes it: only one repair response consumed."""
     target = _write_target(tmp_path)
     llm = FakeLLM(responses={"codegen": ["def test_broken(: pass\n", "def test_x(): assert True\n"]})
     pytest_results = iter([_fail("SyntaxError"), _ok(), _ok()])
@@ -95,6 +96,35 @@ def test_loop_repair_rescues_round_when_second_pytest_passes(tmp_path, monkeypat
     assert result.rounds[0].pytest_ok is True
     assert result.rounds[0].repaired is True
     assert result.rounds[0].report.kill_rate == 1.0
+
+
+def test_loop_repair_rescues_on_second_attempt(tmp_path, monkeypatch):
+    """First repair attempt still fails pytest; second attempt succeeds. This
+    is the case that motivated the two-shot repair path -- the model sometimes
+    needs a temperature bump to break out of a locked-in wrong expectation."""
+    target = _write_target(tmp_path)
+    llm = FakeLLM(
+        responses={
+            "codegen": [
+                "def test_broken(: pass\n",         # T1 output (broken)
+                "def test_still_broken(: pass\n",   # first repair (still broken)
+                "def test_x(): assert True\n",      # second repair (fixed)
+            ]
+        }
+    )
+    pytest_results = iter([_fail("SyntaxError"), _fail("SyntaxError"), _ok(), _ok()])
+    monkeypatch.setattr(loop_mod, "run_pytest", lambda *_a, **_kw: next(pytest_results))
+    monkeypatch.setattr(loop_mod, "run_mutmut", lambda **_kw: (_report(killed=5, survived=0), _ok()))
+
+    result = loop_mod.run_loop(
+        target=target, workdir=tmp_path / "wd", cfg=AppConfig(), llm=llm, max_rounds=3
+    )
+
+    assert len(result.rounds) == 1
+    assert result.rounds[0].pytest_ok is True
+    assert result.rounds[0].repaired is True
+    # Codegen was called 3 times: T1 + 2 repairs.
+    assert sum(1 for c in llm.calls if c.role == "codegen") == 3
 
 
 def test_loop_stops_when_no_survivors_after_round_1(tmp_path, monkeypatch):

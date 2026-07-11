@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}runs — mutagen{% endblock %}
+{% block body %}
+<h1>runs</h1>
+<p class="muted">reading <code>{{ runs_root }}</code></p>
+
+{% if benches %}
+<h2>benchmarks</h2>
+<table class="grid">
+  <thead>
+    <tr>
+      <th>name</th>
+      <th class="num">targets</th>
+      <th class="num">mean kill rate</th>
+      <th class="num">mean seeded catch</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for b in benches %}
+    <tr>
+      <td>{{ b.name }}</td>
+      <td class="num">{{ b.entries|length }}</td>
+      <td class="num">{{ fmt_pct(b.mean_kill_rate) }}</td>
+      <td class="num">{{ fmt_pct(b.mean_seeded_bug_catch_rate) }}</td>
+      <td><a href="/bench/{{ b.name }}">view →</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h2>individual runs</h2>
+{% if not runs %}
+<p class="muted">no runs found. try <code>mutagen run &lt;target&gt;</code> first.</p>
+{% else %}
+<table class="grid">
+  <thead>
+    <tr>
+      <th>name</th>
+      <th>target</th>
+      <th class="num">rounds</th>
+      <th class="num">kill rate</th>
+      <th class="num">tokens</th>
+      <th>stopped</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in runs %}
+    <tr>
+      <td>{{ r.name }}</td>
+      <td class="muted small">{{ r.target or "-" }}</td>
+      <td class="num">{{ r.rounds }}</td>
+      <td class="num {% if r.kill_rate and r.kill_rate >= 0.9 %}good{% endif %}">{{ fmt_pct(r.kill_rate) }}</td>
+      <td class="num">{{ fmt_num(r.total_tokens) }}</td>
+      <td class="small">{{ r.stopped_reason or "-" }}</td>
+      <td><a href="/runs/{{ r.name }}">view →</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

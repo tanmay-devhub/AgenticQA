@@ -1,0 +1,5 @@
+{
+  "bug_1.py": "off-by-one on start: uses page * per_page instead of (page-1) * per_page",
+  "bug_2.py": "end index never clamped to total; last partial page overflows",
+  "bug_3.py": "page-past-end returns (start, start) instead of (total, total)"
+}

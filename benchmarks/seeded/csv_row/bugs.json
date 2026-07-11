@@ -1,0 +1,5 @@
+{
+  "bug_1.py": "escaped-quote '\"\"' inside quoted field dropped instead of yielding a literal '\"'",
+  "bug_2.py": "final field never appended to output list",
+  "bug_3.py": "unterminated quoted field returns instead of raising ValueError"
+}

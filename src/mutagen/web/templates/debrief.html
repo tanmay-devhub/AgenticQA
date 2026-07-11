@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}debrief round {{ round_idx }} — {{ name }}{% endblock %}
+{% block body %}
+<p class="breadcrumb"><a href="/runs">runs</a> / <a href="/runs/{{ name }}">{{ name }}</a> / debrief round {{ round_idx }}</p>
+<h1>round {{ round_idx }} debrief</h1>
+<p class="muted small"><a href="/runs/{{ name }}/debrief/{{ round_idx }}/raw">raw markdown ↓</a></p>
+
+<article class="debrief">
+  {{ rendered|safe }}
+</article>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  if (window.Prism) Prism.highlightAllUnder(document.querySelector('.debrief'));
+</script>
+{% endblock %}

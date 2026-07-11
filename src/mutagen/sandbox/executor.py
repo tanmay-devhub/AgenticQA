@@ -1,7 +1,16 @@
 """Sandbox backends.
 
-Subprocess backend for now (Windows-friendly, no daemon). Runs a command
-with a timeout and captures stdout/stderr. Docker backend later, same shape.
+Two implementations behind one interface (``run`` -> ``RunResult``):
+
+    subprocess (default): run in-process on the host Python. Fast, Windows-
+        friendly, no daemon. Safe on hand-picked benchmark code; NOT safe
+        for arbitrary user code.
+    docker:               run inside ``mutagen-sandbox:latest`` with the
+        workdir mounted at /work, no network, unprivileged user. Required
+        before pointing mutagen at anything you didn't write yourself.
+
+Backend selection is per call via ``backend="subprocess"|"docker"``. Higher
+layers (loop, MCP server) forward ``cfg.sandbox.backend`` down.
 """
 
 from __future__ import annotations
@@ -10,6 +19,9 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+
+Backend = Literal["subprocess", "docker"]
 
 
 @dataclass
@@ -20,19 +32,14 @@ class RunResult:
     timed_out: bool
 
 
-def run(
+def _run_subprocess(
     cmd: list[str],
     *,
     cwd: Path,
     timeout_s: int,
     env_overrides: dict[str, str] | None = None,
 ) -> RunResult:
-    """Run a command in ``cwd`` with a wall-clock timeout, capturing streams.
-
-    ``env_overrides`` merges into the current environment (never replaces it),
-    so subprocesses still see PATH etc. We force UTF-8 I/O by default because
-    several tools (notably mutmut) crash on Windows cp1252 when printing emoji.
-    """
+    """Host-Python subprocess. See ``run`` for the shared contract."""
     import os
     env = os.environ.copy()
     env.setdefault("PYTHONIOENCODING", "utf-8")
@@ -67,21 +74,31 @@ def run(
     )
 
 
-def run_pytest(
-    cwd: Path,
+def run(
+    cmd: list[str],
     *,
+    cwd: Path,
     timeout_s: int,
-    extra_args: list[str] | None = None,
-    coverage_source: str | None = None,
+    env_overrides: dict[str, str] | None = None,
+    backend: Backend = "subprocess",
 ) -> RunResult:
-    """Run pytest inside ``cwd`` using the current Python interpreter.
+    """Dispatch a run to the selected backend.
 
-    When ``coverage_source`` is set (e.g. ``"target"``), coverage.py is engaged
-    and a ``coverage.json`` file is written next to ``cwd``. The loop reads it
-    to feed uncovered lines back to the planner. Coverage is best-effort: if
-    pytest-cov is unavailable, the outer caller should fall through gracefully.
+    Both backends promise:
+      - captures stdout / stderr as UTF-8 strings (with replacement on
+        invalid bytes),
+      - returns ``timed_out=True`` if the wall-clock budget was blown,
+      - never raises for a non-zero exit code (surface via ``returncode``).
     """
-    cmd = [sys.executable, "-m", "pytest", "-q"]
+    if backend == "docker":
+        # Local import so the subprocess path never has to touch docker code.
+        from mutagen.sandbox.docker import run_docker
+        return run_docker(cmd, cwd=cwd, timeout_s=timeout_s, env_overrides=env_overrides)
+    return _run_subprocess(cmd, cwd=cwd, timeout_s=timeout_s, env_overrides=env_overrides)
+
+
+def _pytest_argv(python_exe: str, coverage_source: str | None, extra_args: list[str] | None) -> list[str]:
+    cmd = [python_exe, "-m", "pytest", "-q"]
     if coverage_source:
         cmd += [
             f"--cov={coverage_source}",
@@ -90,4 +107,24 @@ def run_pytest(
         ]
     if extra_args:
         cmd.extend(extra_args)
-    return run(cmd, cwd=cwd, timeout_s=timeout_s)
+    return cmd
+
+
+def run_pytest(
+    cwd: Path,
+    *,
+    timeout_s: int,
+    extra_args: list[str] | None = None,
+    coverage_source: str | None = None,
+    backend: Backend = "subprocess",
+) -> RunResult:
+    """Run pytest inside ``cwd``.
+
+    Subprocess backend uses the host ``sys.executable`` so the venv's pytest
+    resolves; docker backend uses plain ``python`` on the container's PATH.
+    Coverage is best-effort in both: if pytest-cov isn't available the outer
+    caller should fall through gracefully.
+    """
+    python_exe = sys.executable if backend == "subprocess" else "python"
+    cmd = _pytest_argv(python_exe, coverage_source, extra_args)
+    return run(cmd, cwd=cwd, timeout_s=timeout_s, backend=backend)

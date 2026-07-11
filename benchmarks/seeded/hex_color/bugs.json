@@ -1,0 +1,5 @@
+{
+  "bug_1.py": "3-digit shorthand (#abc) not expanded; raises ValueError",
+  "bug_2.py": "leading '#' never stripped; every downstream slice misaligned",
+  "bug_3.py": "green slice indices shifted (3:5 instead of 2:4)"
+}

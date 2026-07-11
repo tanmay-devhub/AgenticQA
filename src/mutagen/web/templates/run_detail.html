@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} — mutagen{% endblock %}
+{% block body %}
+<p class="breadcrumb"><a href="/runs">runs</a> / {{ name }}</p>
+<h1>{{ name }}</h1>
+
+{% if run %}
+<div class="stat-row">
+  <div class="stat">
+    <div class="label">final kill rate</div>
+    <div class="value {% if run.final_kill_rate and run.final_kill_rate >= 0.9 %}good{% endif %}">
+      {{ fmt_pct(run.final_kill_rate) }}
+    </div>
+  </div>
+  <div class="stat">
+    <div class="label">rounds</div>
+    <div class="value">{{ rounds|length }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">stopped</div>
+    <div class="value small">{{ run.stopped_reason }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">codegen tokens</div>
+    <div class="value">{{ fmt_num(run.total_usage.codegen.prompt_tokens + run.total_usage.codegen.completion_tokens) }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">planner tokens</div>
+    <div class="value">{{ fmt_num(run.total_usage.planner.prompt_tokens + run.total_usage.planner.completion_tokens) }}</div>
+  </div>
+</div>
+{% else %}
+<p class="muted">no run.json yet — showing raw per-round reports.</p>
+{% endif %}
+
+<h2>kill rate per round</h2>
+<div class="chart-wrap"><canvas id="killChart" height="120"></canvas></div>
+
+<h2>rounds</h2>
+<table class="grid">
+  <thead>
+    <tr>
+      <th class="num">#</th>
+      <th>tier</th>
+      <th>pytest</th>
+      <th>repaired</th>
+      <th class="num">killed/total</th>
+      <th class="num">survived</th>
+      <th class="num">kill rate</th>
+      <th class="num">elapsed s</th>
+      <th class="num">cg+pl tokens</th>
+      <th>debrief</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in rounds %}
+    {% set rep = r.report %}
+    <tr>
+      <td class="num">{{ r.index }}</td>
+      <td>T{{ r.tier }}</td>
+      <td>{% if r.pytest_ok %}<span class="pill good">ok</span>{% else %}<span class="pill bad">fail</span>{% endif %}</td>
+      <td>{% if r.repaired %}yes{% else %}-{% endif %}</td>
+      <td class="num">{% if rep %}{{ rep.killed }}/{{ rep.total }}{% else %}-{% endif %}</td>
+      <td class="num">{% if rep %}{{ rep.survived }}{% else %}-{% endif %}</td>
+      <td class="num">{% if rep %}{{ fmt_pct(rep.kill_rate) }}{% else %}-{% endif %}</td>
+      <td class="num">{{ "%.1f"|format(r.elapsed_s or 0) }}</td>
+      <td class="num">
+        {{ fmt_num((r.usage.codegen.prompt_tokens or 0) + (r.usage.codegen.completion_tokens or 0)
+                 + (r.usage.planner.prompt_tokens or 0) + (r.usage.planner.completion_tokens or 0)) }}
+      </td>
+      <td><a href="/runs/{{ name }}/debrief/{{ r.index }}">open →</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h2>target source</h2>
+<pre class="code"><code class="language-python">{{ target_src }}</code></pre>
+
+<h2>generated tests</h2>
+<div class="tabs">
+  {% for r in rounds %}
+  <button class="tab"
+          hx-get="/runs/{{ name }}/tests/{{ r.index }}"
+          hx-target="#tests-view"
+          hx-swap="innerHTML"
+          onclick="document.querySelectorAll('.tab').forEach(t => t.classList.remove('active')); this.classList.add('active'); this.dispatchEvent(new CustomEvent('highlight'));">
+    round {{ r.index }} (T{{ r.tier }})
+  </button>
+  {% endfor %}
+</div>
+<pre class="code"><code id="tests-view" class="language-python">click a round above to load the generated test file</code></pre>
+
+<h2>survivors (last round with a report)</h2>
+{% set last = None %}
+{% for r in rounds %}{% if r.report %}{% set _ = last %}{% set last = r %}{% endif %}{% endfor %}
+{% if last and last.report.survivors %}
+<table class="grid">
+  <thead>
+    <tr>
+      <th>id</th>
+      <th>file</th>
+      <th class="num">line</th>
+      <th>kind</th>
+      <th>diff</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for m in last.report.survivors %}
+    <tr>
+      <td class="mono small">{{ m.id }}</td>
+      <td class="mono small">{{ m.file or "-" }}</td>
+      <td class="num">{{ m.line or "-" }}</td>
+      <td>{{ m.kind }}</td>
+      <td><pre class="code diff"><code class="language-diff">{{ (m.diff or "").strip() }}</code></pre></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">no survivors on the last round with a report.</p>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+const labels = {{ chart_labels|tojson }};
+const kills = {{ chart_kill|tojson }};
+new Chart(document.getElementById("killChart"), {
+  type: "line",
+  data: {
+    labels,
+    datasets: [{
+      label: "kill rate %",
+      data: kills,
+      borderColor: "#4ade80",
+      backgroundColor: "rgba(74,222,128,0.15)",
+      fill: true,
+      tension: 0.25,
+    }]
+  },
+  options: {
+    responsive: true,
+    scales: { y: { min: 0, max: 100, ticks: { callback: v => v + "%" } } },
+    plugins: { legend: { display: false } }
+  }
+});
+
+// Re-highlight code after HTMX swaps in a new test file.
+document.body.addEventListener("htmx:afterSwap", (e) => {
+  if (e.detail.target && e.detail.target.id === "tests-view") {
+    e.detail.target.className = "language-python";
+    if (window.Prism) Prism.highlightElement(e.detail.target);
+  }
+});
+
+// Highlight already-visible code blocks on load.
+if (window.Prism) Prism.highlightAll();
+</script>
+{% endblock %}

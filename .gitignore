@@ -1,14 +1,196 @@
+# ---------------------------------------------------------------------------
+# mutagen-qa .gitignore
+#
+# Scoped for a multi-language tool (Python today; JS/TS, Java, C#, C++ next),
+# a web dashboard, and Docker builds. Keep this file curated: prefer wide,
+# well-known patterns over speculative negations that quietly stop working.
+# ---------------------------------------------------------------------------
+
+# --- secrets & local overrides (NEVER commit) ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+*.crt
+credentials.json
+
+# --- generated run artifacts (large, machine-specific) ---
+runs/
+benchmark-results/
+
+# ===========================================================================
+# Python
+# ===========================================================================
 __pycache__/
 *.py[cod]
+*$py.class
+*.egg
 *.egg-info/
-.venv/
-.env
-runs/
-.pytest_cache/
-.mutmut-cache
-.coverage
-htmlcov/
-dist/
 build/
-.ruff_cache/
+dist/
+wheels/
+pip-wheel-metadata/
+
+# testing / linting caches
+.pytest_cache/
 .mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.hypothesis/
+
+# coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# mutmut
+.mutmut-cache
+.mutmut-cache.sqlite3
+
+# virtualenvs
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ===========================================================================
+# JavaScript / TypeScript
+# ===========================================================================
+node_modules/
+.pnp/
+.pnp.js
+.yarn/
+.pnpm-store/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# framework build outputs
+.next/
+out/
+.nuxt/
+.turbo/
+.svelte-kit/
+.vercel/
+.netlify/
+
+# ts build
+*.tsbuildinfo
+
+# coverage
+coverage/
+.nyc_output/
+*.lcov
+
+# Stryker (JS/TS mutation)
+.stryker-tmp/
+reports/mutation/
+
+# ===========================================================================
+# Java / JVM
+# ===========================================================================
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+target/
+.gradle/
+hs_err_pid*.log
+replay_pid*.log
+
+# PIT reports
+pit-reports/
+
+# ===========================================================================
+# C# / .NET
+# ===========================================================================
+bin/
+obj/
+*.user
+*.suo
+*.userprefs
+*.pdb
+*.dll
+*.exe
+project.lock.json
+.vs/
+
+# Stryker.NET
+StrykerOutput/
+
+# ===========================================================================
+# C / C++
+# ===========================================================================
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.out
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+cmake-build-*/
+compile_commands.json
+
+# mull reports
+mull-report/
+
+# ===========================================================================
+# Rust (future-proof; harmless to have)
+# ===========================================================================
+# Only Rust build artifacts inside a Cargo project. If /target ever collides
+# with a source directory named target/, add a repo-local negation.
+Cargo.lock
+!Cargo.toml
+
+# ===========================================================================
+# Docker & container tooling
+# ===========================================================================
+docker-compose.override.yml
+docker-compose.*.local.yml
+.docker/
+
+# ===========================================================================
+# Editors / IDEs
+# ===========================================================================
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.settings/
+
+# ===========================================================================
+# Operating system
+# ===========================================================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+ehthumbs.db
+
+# ===========================================================================
+# Logs, tempfiles, misc
+# ===========================================================================
+*.log
+logs/
+tmp/
+.tmp/
+.cache/

@@ -38,6 +38,9 @@ class TestSpec:
     Groups survivors that live in the same function so the generator can write
     a small number of parametrized tests instead of one test per mutant.
     """
+    # pytest tries to collect any class whose name starts with "Test" -- opt out.
+    __test__ = False
+
     file: str
     function: str | None
     dominant_kind: MutationKind

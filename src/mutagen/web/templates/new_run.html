@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}new run — mutagen{% endblock %}
+{% block body %}
+{% if not landing %}<p class="breadcrumb"><a href="/runs">runs</a> / new</p>{% endif %}
+<h1>{% if landing %}start a run{% else %}new run{% endif %}</h1>
+<p class="muted">Paste a Python module below. The docstring on each public function is the oracle mutagen tests against.</p>
+
+<form method="post" action="/jobs" class="stack">
+  <label>
+    <span>display name</span>
+    <input name="target_name" required maxlength="80" placeholder="e.g. slugify" />
+  </label>
+
+  <label>
+    <span>target source (Python)</span>
+    <textarea name="target_source" required rows="18" spellcheck="false" placeholder='"""Turn arbitrary text into a URL-safe slug."""&#10;&#10;def slugify(text: str, max_len: int = 60) -> str:&#10;    """Rules:&#10;        - lowercase, hyphen-separated ASCII.&#10;        - non-str -> TypeError.&#10;    """&#10;    ...&#10;'></textarea>
+  </label>
+
+  <label class="inline">
+    <span>max rounds</span>
+    <input name="max_rounds" type="number" value="3" min="1" max="10" />
+  </label>
+
+  <button type="submit" class="primary">start run</button>
+  {% if auth_configured() %}
+  <p class="muted small">Bearer token required. Set <code>Authorization: Bearer &lt;token&gt;</code> in your reverse proxy or use curl/HTTPie directly.</p>
+  {% endif %}
+</form>
+{% endblock %}

@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 from mutagen.mutation.report import Mutant, MutationKind, MutationReport
-from mutagen.sandbox.executor import RunResult, run
+from mutagen.sandbox.executor import Backend, RunResult, run
 
 _STATUSES = ("killed", "survived", "timeout", "suspicious", "skipped")
 
@@ -121,12 +121,20 @@ def _parse_file_and_line(diff: str) -> tuple[str | None, int | None]:
     return file, line
 
 
-def _mutmut(args: list[str], *, cwd: Path, timeout_s: int) -> RunResult:
-    return run([sys.executable, "-m", "mutmut", *args], cwd=cwd, timeout_s=timeout_s)
+def _python_exe(backend: Backend) -> str:
+    """Host Python for subprocess; PATH-resolved ``python`` inside the container."""
+    return sys.executable if backend == "subprocess" else "python"
 
 
-def _result_ids(status: str, *, cwd: Path, timeout_s: int) -> list[str]:
-    res = _mutmut(["result-ids", status], cwd=cwd, timeout_s=timeout_s)
+def _mutmut(args: list[str], *, cwd: Path, timeout_s: int, backend: Backend) -> RunResult:
+    return run(
+        [_python_exe(backend), "-m", "mutmut", *args],
+        cwd=cwd, timeout_s=timeout_s, backend=backend,
+    )
+
+
+def _result_ids(status: str, *, cwd: Path, timeout_s: int, backend: Backend) -> list[str]:
+    res = _mutmut(["result-ids", status], cwd=cwd, timeout_s=timeout_s, backend=backend)
     if res.returncode != 0:
         return []
     ids: list[str] = []
@@ -138,8 +146,8 @@ def _result_ids(status: str, *, cwd: Path, timeout_s: int) -> list[str]:
     return ids
 
 
-def _fetch_diff(mutant_id: str, *, cwd: Path, timeout_s: int) -> str | None:
-    res = _mutmut(["show", mutant_id], cwd=cwd, timeout_s=timeout_s)
+def _fetch_diff(mutant_id: str, *, cwd: Path, timeout_s: int, backend: Backend) -> str | None:
+    res = _mutmut(["show", mutant_id], cwd=cwd, timeout_s=timeout_s, backend=backend)
     if res.returncode != 0:
         return None
     return res.stdout.strip() or None
@@ -152,9 +160,11 @@ def run_mutmut(
     run_timeout_s: int,
     per_call_timeout_s: int = 60,
     disabled_types: list[str] | None = None,
+    backend: Backend = "subprocess",
 ) -> tuple[MutationReport, RunResult]:
     """Run mutmut in ``workdir`` against ``target_rel`` and return a report."""
-    runner_cmd = f'"{sys.executable}" -m pytest -x --assert=plain'
+    py = _python_exe(backend)
+    runner_cmd = f'"{py}" -m pytest -x --assert=plain'
     args = [
         "run",
         "--paths-to-mutate", target_rel,
@@ -165,19 +175,19 @@ def run_mutmut(
     ]
     if disabled_types:
         args.extend(["--disable-mutation-types", ",".join(disabled_types)])
-    run_res = _mutmut(args, cwd=workdir, timeout_s=run_timeout_s)
+    run_res = _mutmut(args, cwd=workdir, timeout_s=run_timeout_s, backend=backend)
 
     counts: dict[str, int] = {}
     survivor_ids: list[str] = []
     for status in _STATUSES:
-        ids = _result_ids(status, cwd=workdir, timeout_s=per_call_timeout_s)
+        ids = _result_ids(status, cwd=workdir, timeout_s=per_call_timeout_s, backend=backend)
         counts[status] = len(ids)
         if status == "survived":
             survivor_ids = ids
 
     survivors: list[Mutant] = []
     for mid in survivor_ids:
-        diff = _fetch_diff(mid, cwd=workdir, timeout_s=per_call_timeout_s)
+        diff = _fetch_diff(mid, cwd=workdir, timeout_s=per_call_timeout_s, backend=backend)
         file, line = (None, None)
         kind: MutationKind = "other"
         if diff:

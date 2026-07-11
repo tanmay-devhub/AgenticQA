@@ -1,9 +1,9 @@
-"""MCP surface: expose the agent as tools over the Model Context Protocol.
+"""MCP server exposing mutagen's core operations as agent-callable tools.
 
-Tools (planned):
-    qa.generate_tests(target_path, budget, config) -> {tests, report}
-    qa.mutation_score(target_path, tests_path)     -> {kill_rate, survivors}
-    qa.run_loop(target_path, budget, config)       -> streamed progress
-
-Kept in its own subpackage so the agent library stays usable without MCP.
+Design: thin wrappers around the same functions the CLI uses. If it works from
+the CLI, it works over MCP -- no reimplementation, no divergence.
 """
+
+from mutagen.mcp.server import create_server
+
+__all__ = ["create_server"]

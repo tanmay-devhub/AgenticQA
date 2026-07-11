@@ -56,7 +56,8 @@ def test_persist_round_and_run(tmp_path: Path, monkeypatch):
 def test_persist_run_even_when_pytest_fails(tmp_path: Path, monkeypatch):
     target = tmp_path / "add.py"
     target.write_text(TARGET_SRC, encoding="utf-8")
-    llm = FakeLLM(responses={"codegen": ["def test_x(): assert True\n", "def test_x(): assert True\n"]})
+    # T1 + up to MAX_REPAIR_ATTEMPTS repair shots.
+    llm = FakeLLM(responses={"codegen": ["def test_x(): assert True\n"] * 3})
     monkeypatch.setattr(
         loop_mod, "run_pytest",
         lambda *_a, **_kw: RunResult(returncode=1, stdout="", stderr="err", timed_out=False),

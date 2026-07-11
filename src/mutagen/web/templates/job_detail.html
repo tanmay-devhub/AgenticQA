@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}job {{ job.id[:8] }} — mutagen{% endblock %}
+{% block body %}
+<p class="breadcrumb"><a href="/runs">runs</a> / <a href="/jobs">jobs</a> / {{ job.id[:8] }}</p>
+<h1>{{ job.target_name }}</h1>
+
+<div class="stat-row">
+  <div class="stat">
+    <div class="label">status</div>
+    <div class="value" id="stat-status"><span class="pill {% if job.status == 'done' %}good{% elif job.status == 'failed' %}bad{% endif %}">{{ job.status }}</span></div>
+  </div>
+  <div class="stat">
+    <div class="label">rounds</div>
+    <div class="value" id="stat-rounds">{{ job.rounds_done }}/{{ job.max_rounds }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">final kill rate</div>
+    <div class="value {% if job.final_kill_rate and job.final_kill_rate >= 0.9 %}good{% endif %}" id="stat-kill">{{ fmt_pct(job.final_kill_rate) }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">workdir</div>
+    <div class="value small mono">{{ job.workdir_name }}</div>
+  </div>
+</div>
+
+<h2>live progress</h2>
+<div id="events" class="event-log">
+  <div class="muted small placeholder">waiting for first event…</div>
+</div>
+
+<p>
+  <a href="/runs/{{ job.workdir_name }}">open artifacts →</a>
+  {% if job.status in ('queued','running') %}
+  <button id="cancel-btn" class="danger">cancel</button>
+  {% endif %}
+</p>
+
+{% if job.error %}
+<h2>error</h2>
+<pre class="code"><code>{{ job.error }}</code></pre>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const jobId = {{ job.id|tojson }};
+const status = document.getElementById("stat-status");
+const rounds = document.getElementById("stat-rounds");
+const kill = document.getElementById("stat-kill");
+const log = document.getElementById("events");
+
+function line(msg, cls) {
+  // Placeholder lives at the BOTTOM of the log once events prepend on top,
+  // so we look it up by class rather than by position.
+  const placeholder = log.querySelector(".placeholder");
+  if (placeholder) placeholder.remove();
+  const d = document.createElement("div");
+  d.className = "event " + (cls || "");
+  d.textContent = msg;
+  log.prepend(d);
+}
+
+function pill(text, cls) {
+  return `<span class="pill ${cls || ''}">${text}</span>`;
+}
+
+const es = new EventSource(`/api/jobs/${jobId}/events`);
+
+es.addEventListener("snapshot", (e) => {
+  const j = JSON.parse(e.data);
+  status.innerHTML = pill(j.status, j.status === 'done' ? 'good' : j.status === 'failed' ? 'bad' : '');
+  rounds.textContent = `${j.rounds_done}/${j.max_rounds}`;
+});
+
+es.onmessage = (e) => {
+  const ev = JSON.parse(e.data);
+  if (ev.type === "started") {
+    status.innerHTML = pill("running");
+    line("started", "info");
+  } else if (ev.type === "round") {
+    rounds.textContent = `${ev.index}/{{ job.max_rounds }}`;
+    const kr = ev.kill_rate == null ? "-" : (ev.kill_rate * 100).toFixed(1) + "%";
+    if (ev.kill_rate != null) kill.textContent = kr;
+    line(`round ${ev.index} T${ev.tier}  pytest=${ev.pytest_ok ? "ok" : "FAIL"}  killed=${ev.killed}/${ev.total}  survived=${ev.survived}  kill_rate=${kr}${ev.repaired ? "  (repaired)" : ""}`);
+  } else if (ev.type === "done") {
+    status.innerHTML = pill("done", "good");
+    if (ev.final_kill_rate != null) kill.textContent = (ev.final_kill_rate * 100).toFixed(1) + "%";
+    line(`done: ${ev.stopped_reason}`, "info");
+    es.close();
+  } else if (ev.type === "failed") {
+    status.innerHTML = pill("failed", "bad");
+    line("failed: " + ev.error, "bad");
+    es.close();
+  } else if (ev.type === "cancelled") {
+    status.innerHTML = pill("cancelled");
+    line("cancelled", "info");
+    es.close();
+  }
+};
+
+es.addEventListener("end", () => { es.close(); });
+
+const cancelBtn = document.getElementById("cancel-btn");
+if (cancelBtn) {
+  cancelBtn.addEventListener("click", async () => {
+    if (!confirm("Cancel this job?")) return;
+    const r = await fetch(`/api/jobs/${jobId}`, { method: "DELETE" });
+    if (r.status === 401) alert("bearer token required (write endpoint)");
+    if (!r.ok && r.status !== 401) alert("cancel failed: " + r.status);
+  });
+}
+</script>
+{% endblock %}
