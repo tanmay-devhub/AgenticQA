@@ -153,6 +153,47 @@ button.danger {
 }
 button.danger:hover { background: rgba(248,113,113,0.1); }
 
+/* mutmut progress bar on job detail */
+.progress-wrap {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.75rem 1rem;
+  margin: 0.75rem 0 1rem;
+}
+.progress-track {
+  position: relative;
+  height: 22px;
+  background: var(--bg-3);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  width: 0%;
+  transition: width 0.4s ease-out;
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.35) inset;
+}
+.progress-percent {
+  position: absolute;
+  inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--fg);
+  font-weight: bold;
+  font-size: 0.85rem;
+  mix-blend-mode: difference;      /* readable over both bg and fill */
+  letter-spacing: 0.03em;
+}
+.progress-detail {
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+}
+.progress-detail strong { color: var(--fg); }
+.progress-complete .progress-fill {
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-2) 100%);
+}
+
 /* live event log on job detail */
 .event-log {
   background: var(--bg-2);
@@ -167,6 +208,30 @@ button.danger:hover { background: rgba(248,113,113,0.1); }
 .event:last-child { border-bottom: none; }
 .event.info { color: var(--accent-2); }
 .event.bad { color: var(--bad); }
+
+/* Optional focus panel: shown when the user gave a plain-English testing focus. */
+.focus-info {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent-2);
+  border-radius: 4px;
+  padding: 0.6rem 0.9rem;
+  margin: 1rem 0;
+}
+.focus-info .label { color: var(--fg-dim); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem; }
+.focus-info .focus-body { color: var(--fg); font-size: 0.9rem; white-space: pre-wrap; }
+
+/* repo-mode meta panel on the job detail page */
+.repo-info {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.6rem 0.9rem;
+  margin: 1rem 0;
+  font-size: 0.9rem;
+  display: flex; flex-direction: column; gap: 0.25rem;
+}
+.repo-info code { background: var(--bg-3); padding: 1px 6px; border-radius: 3px; }
 
 /* debrief page: rendered markdown inside .debrief */
 .debrief {
@@ -216,3 +281,64 @@ button.danger:hover { background: rgba(248,113,113,0.1); }
 }
 .tab:hover { color: var(--fg); }
 .tab.active { background: var(--bg-3); color: var(--accent); border-bottom-color: var(--bg-3); }
+
+/* Lock everything except the cancel button while a job is running.
+   Applied to <body> by job_detail.js; cleared on any terminal event. */
+body.round-locked .lockable {
+  pointer-events: none;
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Report page: one card per surviving mutant. */
+.survivor {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--fg-dim);
+  border-radius: 4px;
+  padding: 0.9rem 1.1rem;
+  margin: 0.75rem 0;
+}
+.survivor-head {
+  display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;
+  margin-bottom: 0.5rem;
+}
+.survivor-loc { color: var(--fg); background: var(--bg-3); padding: 1px 6px; border-radius: 3px; }
+.survivor p { margin: 0.35rem 0; }
+.survivor details { margin: 0.35rem 0; }
+.survivor summary { cursor: pointer; color: var(--fg-dim); font-size: 0.85rem; }
+.survivor summary:hover { color: var(--fg); }
+.fix-hint { color: var(--accent); }
+
+.pill.severity-critical { background: rgba(248,113,113,0.2); color: var(--bad); border: 1px solid var(--bad); }
+.pill.severity-high     { background: rgba(251,191,36,0.15); color: #fbbf24; }
+.pill.severity-low      { background: rgba(74,222,128,0.12); color: var(--accent); }
+.pill.severity-unknown  { background: var(--bg-3); color: var(--fg-dim); }
+.pill.category-equivalent { background: var(--bg-3); color: var(--fg-dim); }
+.pill.category-test_gap   { background: rgba(96,165,250,0.15); color: var(--accent-2); }
+.pill.category-spec_gap   { background: rgba(251,191,36,0.15); color: #fbbf24; }
+.pill.category-low_value  { background: var(--bg-3); color: var(--fg-dim); }
+.pill.category-unknown    { background: var(--bg-3); color: var(--fg-dim); }
+.survivor .survivor-head .pill:first-child.severity-critical + * {
+  /* keep critical severity's red border a touch bolder */
+}
+.survivor:has(.severity-critical) { border-left-color: var(--bad); }
+.survivor:has(.severity-high)     { border-left-color: #fbbf24; }
+.survivor:has(.severity-low)      { border-left-color: var(--accent); }
+
+/* Print-friendly rules for the PDF renderer + browser Print dialog. */
+@media print {
+  body { background: white; color: black; }
+  .topbar, .breadcrumb, .btn, .lockable, form { display: none !important; }
+  .stat, .survivor, .debrief { background: #fff; border-color: #ccc; color: #000; }
+  .stat .value, .survivor-loc, code { color: #000; background: #f5f5f5; }
+  a { color: #0044aa; text-decoration: none; }
+  details { display: block; }
+  details > summary { display: none; }
+  .survivor { page-break-inside: avoid; }
+  h2 { page-break-after: avoid; }
+  .pill { border: 1px solid #888; color: #333 !important; background: #eee !important; }
+  .pill.severity-critical { border-color: #c00; color: #900 !important; background: #fee !important; }
+  .pill.severity-high { border-color: #b57200; color: #944; background: #fef7e0 !important; }
+  .pill.severity-low { border-color: #2a6; color: #063; background: #ecfae1 !important; }
+}

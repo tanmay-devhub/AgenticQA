@@ -76,6 +76,23 @@ def write_round_body(workdir: Path, r: RoundResult) -> Path:
     lines.append(f"- **tests file:** `{r.tests_path.name}`")
     lines.append("")
 
+    if getattr(r, "no_codegen_output", False):
+        lines.append("## codegen")
+        lines.append("")
+        lines.append(
+            "The codegen model returned no `def test_*` functions. Typical "
+            "cause: the model exhausted its `max_tokens` budget on hidden "
+            "reasoning tokens before emitting any pytest code. Pytest and "
+            "mutmut were **not** invoked for this round -- running them "
+            "against an empty test file would silently rediscover the "
+            "previous round's tests and make the failed round look "
+            "successful."
+        )
+        lines.append("")
+        path = _round_debrief_path(workdir, r.index)
+        path.write_text("\n".join(lines), encoding="utf-8")
+        return path
+
     # -- pytest -------------------------------------------------------
     lines.append("## pytest")
     lines.append("")

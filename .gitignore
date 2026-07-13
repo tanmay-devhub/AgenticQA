@@ -17,8 +17,18 @@
 credentials.json
 
 # --- generated run artifacts (large, machine-specific) ---
+# Everything the loop writes to workdirs (target copy, generated test
+# modules, per-round reports, debriefs, coverage & mutmut caches,
+# analysis JSON, focus.txt, downloadable PDFs) lives under runs/.
 runs/
 benchmark-results/
+
+# --- AI assistants & editor-side local state ---
+.claude/
+.cursor/
+.aider*
+.roo/
+.continue/
 
 # ===========================================================================
 # Python
@@ -36,7 +46,9 @@ pip-wheel-metadata/
 # testing / linting caches
 .pytest_cache/
 .mypy_cache/
+.dmypy.json
 .ruff_cache/
+.pyre/
 .tox/
 .nox/
 .hypothesis/

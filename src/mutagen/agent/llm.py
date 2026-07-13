@@ -1,8 +1,9 @@
 """Provider-agnostic LLM client (litellm-backed).
 
-Two roles from config:
-    codegen  -- default: Ollama Cloud `qwen3-coder:480b-cloud`.
+Three roles from config:
+    codegen  -- default: Ollama Cloud `minimax-m3:cloud`.
     planner  -- default: `gemini/gemini-2.5-pro`.
+    analysis -- default: Ollama Cloud `gpt-oss:120b-cloud` (post-run report).
 
 Provider swaps are one config edit. Zero-cost path = point `codegen` at a
 local Ollama model, e.g. `ollama/qwen3-coder:30b`, without code changes.
@@ -19,7 +20,7 @@ import litellm
 
 from mutagen.config import AppConfig, LLMRole
 
-Role = Literal["codegen", "planner"]
+Role = Literal["codegen", "planner", "analysis"]
 
 # Retry only on errors that plausibly recover on retry. Auth / bad-request
 # type errors are permanent -- retrying just burns time and money.
@@ -70,6 +71,7 @@ class RoleUsage:
 class Usage:
     codegen: RoleUsage = field(default_factory=RoleUsage)
     planner: RoleUsage = field(default_factory=RoleUsage)
+    analysis: RoleUsage = field(default_factory=RoleUsage)
 
     def record(self, role: Role, resp: LLMResponse) -> None:
         bucket: RoleUsage = getattr(self, role)
@@ -77,32 +79,30 @@ class Usage:
         bucket.prompt_tokens += resp.prompt_tokens or 0
         bucket.completion_tokens += resp.completion_tokens or 0
 
+    def _copy_bucket(self, name: Role) -> RoleUsage:
+        b: RoleUsage = getattr(self, name)
+        return RoleUsage(
+            calls=b.calls, prompt_tokens=b.prompt_tokens, completion_tokens=b.completion_tokens,
+        )
+
     def snapshot(self) -> Usage:
         return Usage(
-            codegen=RoleUsage(
-                calls=self.codegen.calls,
-                prompt_tokens=self.codegen.prompt_tokens,
-                completion_tokens=self.codegen.completion_tokens,
-            ),
-            planner=RoleUsage(
-                calls=self.planner.calls,
-                prompt_tokens=self.planner.prompt_tokens,
-                completion_tokens=self.planner.completion_tokens,
-            ),
+            codegen=self._copy_bucket("codegen"),
+            planner=self._copy_bucket("planner"),
+            analysis=self._copy_bucket("analysis"),
         )
 
     def delta(self, previous: Usage) -> Usage:
+        def _sub(role: Role) -> RoleUsage:
+            cur: RoleUsage = getattr(self, role)
+            prev: RoleUsage = getattr(previous, role)
+            return RoleUsage(
+                calls=cur.calls - prev.calls,
+                prompt_tokens=cur.prompt_tokens - prev.prompt_tokens,
+                completion_tokens=cur.completion_tokens - prev.completion_tokens,
+            )
         return Usage(
-            codegen=RoleUsage(
-                calls=self.codegen.calls - previous.codegen.calls,
-                prompt_tokens=self.codegen.prompt_tokens - previous.codegen.prompt_tokens,
-                completion_tokens=self.codegen.completion_tokens - previous.codegen.completion_tokens,
-            ),
-            planner=RoleUsage(
-                calls=self.planner.calls - previous.planner.calls,
-                prompt_tokens=self.planner.prompt_tokens - previous.planner.prompt_tokens,
-                completion_tokens=self.planner.completion_tokens - previous.planner.completion_tokens,
-            ),
+            codegen=_sub("codegen"), planner=_sub("planner"), analysis=_sub("analysis"),
         )
 
 

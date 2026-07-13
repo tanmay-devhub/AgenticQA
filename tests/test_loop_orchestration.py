@@ -246,3 +246,74 @@ def test_loop_stops_when_planner_finds_no_real_gap(tmp_path, monkeypatch):
 
     assert len(result.rounds) == 1
     assert "no real_gap survivors" in result.stopped_reason
+
+
+def test_loop_stops_when_codegen_returns_no_tests_in_round_1(tmp_path, monkeypatch):
+    """Round 1 codegen returns prose-only output (no `def test_*`). Loop
+    must bail without invoking pytest/mutmut; the round is recorded with
+    ``no_codegen_output=True`` and the stop reason names token starvation.
+    """
+    target = _write_target(tmp_path)
+    llm = FakeLLM(responses={"codegen": ["<think>\nreasoning without code\n</think>\n"]})
+    pytest_calls = []
+    mutmut_calls = []
+    monkeypatch.setattr(
+        loop_mod, "run_pytest",
+        lambda *_a, **_kw: (pytest_calls.append(1), _ok())[1],
+    )
+    monkeypatch.setattr(
+        loop_mod, "run_mutmut",
+        lambda **_kw: (mutmut_calls.append(1), (_report(killed=0, survived=0), _ok()))[1],
+    )
+
+    result = loop_mod.run_loop(
+        target=target, workdir=tmp_path / "wd", cfg=AppConfig(), llm=llm, max_rounds=3
+    )
+
+    assert len(result.rounds) == 1
+    assert result.rounds[0].no_codegen_output is True
+    assert result.rounds[0].pytest_ok is False
+    assert result.rounds[0].report is None
+    assert result.rounds[0].pytest_result.returncode == -1
+    assert "no tests in round 1" in result.stopped_reason
+    # Neither pytest nor mutmut was invoked -- both would have wasted work
+    # rediscovering the previous (nonexistent) tests.
+    assert pytest_calls == []
+    assert mutmut_calls == []
+
+
+def test_loop_stops_when_codegen_returns_no_tests_in_round_2(tmp_path, monkeypatch):
+    """Round 1 succeeds, round 2 codegen starves and returns no tests. Loop
+    must bail after round 2 with a clear reason, and round 1's data is
+    preserved.
+    """
+    target = _write_target(tmp_path)
+    diff = "--- a/target.py\n+++ b/target.py\n@@ -2,1 +2,1 @@\n-    return a + b\n+    return a - b\n"
+    llm = FakeLLM(
+        responses={
+            "codegen": [
+                "def test_r1(): assert True\n",  # T1 ok
+                "<think>\nran out of tokens\n",  # T2 empty (no def test_)
+            ],
+            "planner": ['{"verdict":"real_gap","reason":"needs boundary"}'],
+        }
+    )
+    monkeypatch.setattr(loop_mod, "run_pytest", lambda *_a, **_kw: _ok())
+    monkeypatch.setattr(
+        loop_mod, "run_mutmut",
+        lambda **_kw: (_report(killed=3, survived=1, survivor_diffs=[diff]), _ok()),
+    )
+
+    result = loop_mod.run_loop(
+        target=target, workdir=tmp_path / "wd", cfg=AppConfig(), llm=llm, max_rounds=3
+    )
+
+    assert len(result.rounds) == 2
+    assert result.rounds[0].pytest_ok is True
+    assert result.rounds[0].no_codegen_output is False
+    assert result.rounds[1].no_codegen_output is True
+    assert result.rounds[1].report is None
+    assert "no tests in round 2" in result.stopped_reason
+    # final_report falls back to the last round that HAS a report.
+    assert result.final_report is not None
+    assert result.final_report.kill_rate == 0.75

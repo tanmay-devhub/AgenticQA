@@ -33,6 +33,15 @@
 <p class="muted">no run.json yet — showing raw per-round reports.</p>
 {% endif %}
 
+{% if focus %}
+<div class="focus-info">
+  <div class="label">testing focus</div>
+  <div class="focus-body">{{ focus }}</div>
+</div>
+{% endif %}
+
+<p><a class="btn" href="/runs/{{ name }}/report">view mutation report →</a></p>
+
 <h2>kill rate per round</h2>
 <div class="chart-wrap"><canvas id="killChart" height="120"></canvas></div>
 

@@ -42,6 +42,10 @@ Return ONLY the Python source, nothing else.
 
 _FENCE_RE = re.compile(r"^```(?:python)?\s*\n(.*?)\n```\s*$", re.DOTALL)
 
+# Matches any `def test_<name>` (optionally async, any indentation), at a line
+# start. Class-based tests are rare in generated output, so we don't chase them.
+_TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def\s+test_\w+", re.MULTILINE)
+
 
 def _strip_fences(text: str) -> str:
     """Some models still wrap output in ```python … ``` despite instructions."""
@@ -52,11 +56,57 @@ def _strip_fences(text: str) -> str:
     return stripped + ("\n" if not stripped.endswith("\n") else "")
 
 
+def has_tests(source: str) -> bool:
+    """True iff ``source`` contains at least one ``def test_*`` definition.
+
+    Used by the loop to short-circuit a round when codegen produced no tests
+    (typical cause: a reasoning-heavy model spent its whole ``max_tokens``
+    budget on hidden `<think>` output and never emitted code). Without this
+    check, mutmut would silently rerun against the previous round's tests and
+    the round would look "successful" while doing zero real work.
+    """
+    return bool(_TEST_DEF_RE.search(source))
+
+
+# --- optional user focus -------------------------------------------------
+
+# When the user provided a plain-English focus at job submit time, jobs.py
+# writes it to ``<workdir>/focus.txt``. Reading it here (instead of threading
+# a parameter down from the loop) keeps every codegen call-site the same
+# regardless of whether focus was set.
+
+_FOCUS_FILENAME = "focus.txt"
+
+
+def _read_focus(workdir: Path) -> str | None:
+    f = workdir / _FOCUS_FILENAME
+    if not f.is_file():
+        return None
+    text = f.read_text(encoding="utf-8", errors="replace").strip()
+    return text or None
+
+
+def _focus_directive(focus: str | None) -> str:
+    """Prompt fragment inserted at the top of the user message when focus is set.
+
+    Empty string when no focus, so unfocused runs keep the exact prior prompt
+    behavior and stay reproducible against prior benchmarks.
+    """
+    if not focus:
+        return ""
+    return (
+        "TESTING FOCUS (user priority):\n"
+        f"{focus}\n\n"
+        "Weight your test cases toward this concern first. If the focus is "
+        "narrow (a specific function, edge case, or code path), you may still "
+        "add a couple of sanity tests for the rest, but the MAJORITY of the "
+        "module should target the focus above.\n\n"
+    )
+
+
 def generate(llm: LLM, *, target_source: Path) -> str:
     source = target_source.read_text(encoding="utf-8")
-    resp = llm.complete(
-        "codegen",
-        system=SYSTEM,
-        user=USER_TEMPLATE.format(source=source),
-    )
+    focus = _read_focus(target_source.parent)
+    user = _focus_directive(focus) + USER_TEMPLATE.format(source=source)
+    resp = llm.complete("codegen", system=SYSTEM, user=user)
     return _strip_fences(resp.text)

@@ -26,17 +26,27 @@ Assumptions we're accepting for now:
 from __future__ import annotations
 
 import queue
+import shutil
+import sqlite3
 import threading
 import time
 import traceback
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable
+
+# Poll cadence for the mutmut progress watcher. Small enough to feel live in
+# the UI, large enough that the sqlite reads don't compete with mutmut's own
+# writes on the same file.
+_MUTMUT_POLL_S = 3.0
+
+from typing import Literal
 
 from mutagen.agent.llm import LLM
 from mutagen.agent.loop import LoopResult, run_loop
 from mutagen.config import AppConfig
+from mutagen.repo import CloneError, clone_repo, detect_languages
 
 JobStatus = Literal["queued", "running", "done", "failed", "cancelled"]
 
@@ -68,6 +78,15 @@ class Job:
     final_kill_rate: float | None = None
     # Bounded queue drained by the SSE endpoint.
     events: queue.Queue = field(default_factory=lambda: queue.Queue(maxsize=_EVENT_QUEUE_MAX))
+    # Repo-mode extras (None for paste-source jobs). Populated after clone.
+    repo_url: str | None = None
+    repo_target_path: str | None = None
+    languages: dict[str, int] = field(default_factory=dict)
+    # Optional plain-English description of what the user wants tested.
+    # Persisted to ``workdir/focus.txt`` at run start so downstream modules
+    # (codegen prompts, report analysis) can read it without threading a
+    # parameter through every layer.
+    focus: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -83,6 +102,10 @@ class Job:
             "error": self.error,
             "rounds_done": self.rounds_done,
             "final_kill_rate": self.final_kill_rate,
+            "repo_url": self.repo_url,
+            "repo_target_path": self.repo_target_path,
+            "languages": self.languages,
+            "focus": self.focus,
         }
 
 
@@ -118,22 +141,60 @@ class JobRegistry:
 
     # -- lifecycle -------------------------------------------------------
 
-    def submit(self, *, target_source: str, target_name: str, max_rounds: int) -> Job:
-        """Create workdir, persist target.py, register job, spawn runner."""
-        if not target_source.strip():
-            raise ValueError("target_source is empty")
+    def submit(
+        self,
+        *,
+        target_name: str,
+        max_rounds: int,
+        target_source: str | None = None,
+        repo_url: str | None = None,
+        repo_target_path: str | None = None,
+        focus: str | None = None,
+    ) -> Job:
+        """Create workdir, register a job, and spawn the runner.
+
+        Two modes, exclusive:
+          - **paste**: ``target_source`` is the raw Python module.
+          - **repo**: ``repo_url`` is cloned into ``workdir/_repo/``; the
+            actual target inside the repo is ``repo_target_path`` (relative,
+            must resolve inside the clone).
+
+        Clone I/O runs in the worker thread, not here, so the HTTP submit
+        returns instantly and the user sees a "cloning..." event on the SSE
+        stream.
+        """
         if max_rounds < 1 or max_rounds > 10:
             raise ValueError("max_rounds must be in [1, 10]")
+        if (target_source is None) == (repo_url is None):
+            raise ValueError("provide exactly one of target_source or repo_url")
+        if repo_url is not None and not (repo_target_path or "").strip():
+            raise ValueError("repo_target_path is required when repo_url is set")
+        if target_source is not None and not target_source.strip():
+            raise ValueError("target_source is empty")
+
         job_id = uuid.uuid4().hex
         slug = _slug(target_name)
         wd = self._runs_root / f"{slug}-{job_id[:8]}"
         wd.mkdir(parents=True, exist_ok=True)
-        # Write user-supplied source to a sidecar path -- ``run_loop`` will
-        # copy it to ``workdir/target.py`` during ``_prepare_workdir``, and
-        # a self-copy raises SameFileError on Windows.
-        (wd / "_input.py").write_text(target_source, encoding="utf-8")
 
-        job = Job(id=job_id, target_name=target_name, workdir=wd, max_rounds=max_rounds)
+        if target_source is not None:
+            # Sidecar name avoids SameFileError when the loop copies target
+            # into ``workdir/target.py`` (Windows raises on self-copy).
+            (wd / "_input.py").write_text(target_source, encoding="utf-8")
+
+        # Store focus on the job AND drop it into the workdir so downstream
+        # modules (codegen, report analysis) can pick it up without wiring
+        # a new parameter through the whole call chain.
+        focus_clean = (focus or "").strip() or None
+        if focus_clean:
+            (wd / "focus.txt").write_text(focus_clean, encoding="utf-8")
+
+        job = Job(
+            id=job_id, target_name=target_name, workdir=wd, max_rounds=max_rounds,
+            repo_url=repo_url,
+            repo_target_path=(repo_target_path or None) if repo_url else None,
+            focus=focus_clean,
+        )
         with self._lock:
             self._jobs[job_id] = job
 
@@ -143,6 +204,51 @@ class JobRegistry:
         )
         thread.start()
         return job
+
+    def _prepare_repo_target(self, job: Job) -> Path:
+        """Clone the repo, detect languages, resolve the requested target
+        file safely, and return the path the loop should test."""
+        self._emit(job, {"type": "cloning", "url": job.repo_url})
+        clone_dir = job.workdir / "_repo"
+        clone_repo(job.repo_url, clone_dir)  # raises CloneError
+
+        # Language census -- useful signal for the UI even in Python-only mode.
+        job.languages = detect_languages(clone_dir)
+        self._emit(job, {"type": "languages", "languages": job.languages})
+
+        # Resolve target safely: must stay inside clone_dir, must exist,
+        # must be a .py for the current Python-only pipeline.
+        rel = (job.repo_target_path or "").strip().lstrip("/\\")
+        candidate = (clone_dir / rel).resolve()
+        if clone_dir.resolve() not in candidate.parents and candidate != clone_dir.resolve():
+            raise RuntimeError(f"target path escapes repo root: {rel!r}")
+        if not candidate.is_file():
+            raise RuntimeError(f"target file not found in repo: {rel!r}")
+        if candidate.suffix != ".py":
+            raise RuntimeError(
+                f"only Python targets are supported today; got {candidate.suffix!r}. "
+                "JS/TS/Java/C#/C++ are on the roadmap."
+            )
+        # Copy into the sidecar so downstream _run() code path is uniform
+        # regardless of mode. Loop's _prepare_workdir will then copy the
+        # sidecar into workdir/target.py.
+        sidecar = job.workdir / "_input.py"
+        sidecar.write_text(candidate.read_text(encoding="utf-8"), encoding="utf-8")
+
+        # Pin pytest's rootdir + testpaths to the workdir; otherwise a
+        # cloned repo containing 100+ .py files under ``_repo/`` will cause
+        # pytest to auto-discover across the whole tree during mutmut,
+        # multiplying wall clock by 10-100x.
+        (job.workdir / "pytest.ini").write_text(
+            "[pytest]\n"
+            "testpaths = .\n"
+            "norecursedirs = _repo __pycache__ .mutmut-cache\n"
+            "rootdir = .\n",
+            encoding="utf-8",
+        )
+
+        self._emit(job, {"type": "target_selected", "path": rel})
+        return sidecar
 
     def get(self, job_id: str) -> Job | None:
         with self._lock:
@@ -169,6 +275,42 @@ class JobRegistry:
 
     # -- runner ---------------------------------------------------------
 
+    def _read_mutmut_counts(self, workdir: Path) -> dict | None:
+        """Return current killed/survived/untested counts from mutmut's cache,
+        or None if the cache isn't readable yet.
+
+        mutmut writes to ``.mutmut-cache`` as it processes each mutant, so a
+        cheap read-only query gives a live progress signal without touching
+        mutmut itself.
+        """
+        cache = workdir / ".mutmut-cache"
+        if not cache.is_file():
+            return None
+        try:
+            # ``mode=ro`` + short timeout so we never block mutmut's writes.
+            conn = sqlite3.connect(
+                f"file:{cache.as_posix()}?mode=ro", uri=True, timeout=0.5,
+            )
+            try:
+                rows = conn.execute(
+                    "SELECT status, COUNT(*) FROM Mutant GROUP BY status"
+                ).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return None
+        counts = dict(rows)
+        killed = counts.get("ok_killed", 0)
+        survived = counts.get("bad_survived", 0)
+        untested = counts.get("untested", 0)
+        total = sum(counts.values())
+        return {
+            "killed": killed,
+            "survived": survived,
+            "untested": untested,
+            "total": total,
+        }
+
     def _emit(self, job: Job, event: dict) -> None:
         """Non-blocking put; drop the oldest event on backpressure so a
         stuck SSE client can't wedge the runner thread."""
@@ -189,16 +331,23 @@ class JobRegistry:
         job.started_at = time.monotonic()
         self._emit(job, {"type": "started", "job_id": job.id})
 
-        target_path = job.workdir / "_input.py"
         try:
+            if job.repo_url:
+                target_path = self._prepare_repo_target(job)
+            else:
+                target_path = job.workdir / "_input.py"
             llm = self._llm_factory()
             cfg = AppConfig()
 
-            # We wrap run_loop with a per-round observer by monkey-patching
-            # the persistence hook -- the loop already calls _persist_round
-            # after each RoundResult, which is our natural pulse.
+            # We wrap run_loop with per-round + per-mutmut observers by
+            # monkey-patching two loop-module hooks. The persist patch
+            # fires at each round boundary; the mutmut patch spawns a
+            # short-lived progress poller so the UI shows live counts
+            # while mutmut grinds through mutants (often 2-5 minutes on
+            # Windows, which otherwise looks frozen).
             from mutagen.agent import loop as loop_mod
             original_persist = loop_mod._persist_round
+            original_mutmut = loop_mod.run_mutmut
 
             def _observed_persist(workdir: Path, r) -> None:
                 original_persist(workdir, r)
@@ -220,7 +369,44 @@ class JobRegistry:
                     # the loop's next round-boundary check via an exception.
                     raise _CancelRequested()
 
+            def _observed_mutmut(**kwargs):
+                workdir = kwargs.get("workdir")
+                self._emit(job, {"type": "mutmut_started", "workdir": str(workdir)})
+                stop = threading.Event()
+                started_at = time.monotonic()
+
+                def poll():
+                    while not stop.wait(_MUTMUT_POLL_S):
+                        counts = self._read_mutmut_counts(workdir)
+                        if counts is None:
+                            continue
+                        self._emit(job, {
+                            "type": "mutmut_progress",
+                            "elapsed_s": time.monotonic() - started_at,
+                            **counts,
+                        })
+
+                watcher = threading.Thread(
+                    target=poll, daemon=True,
+                    name=f"mutmut-watcher-{job.id[:8]}",
+                )
+                watcher.start()
+                try:
+                    return original_mutmut(**kwargs)
+                finally:
+                    stop.set()
+                    # One final snapshot so the UI's last number matches disk.
+                    counts = self._read_mutmut_counts(workdir)
+                    if counts is not None:
+                        self._emit(job, {
+                            "type": "mutmut_progress",
+                            "elapsed_s": time.monotonic() - started_at,
+                            **counts,
+                        })
+                    self._emit(job, {"type": "mutmut_done"})
+
             loop_mod._persist_round = _observed_persist
+            loop_mod.run_mutmut = _observed_mutmut
             try:
                 result = self._loop_runner(
                     target=target_path, workdir=job.workdir, cfg=cfg, llm=llm,
@@ -228,6 +414,7 @@ class JobRegistry:
                 )
             finally:
                 loop_mod._persist_round = original_persist
+                loop_mod.run_mutmut = original_mutmut
 
             if result.final_report is not None:
                 job.final_kill_rate = result.final_report.kill_rate
@@ -248,6 +435,11 @@ class JobRegistry:
                               "traceback": traceback.format_exc()[-2000:]})
         finally:
             job.finished_at = time.monotonic()
+            # Drop the cloned repo once the job is terminal -- it's ~2-3 MB
+            # per run and only useful while pytest is being invoked. Debriefs,
+            # mutants, and pytest artifacts under the workdir survive.
+            if job.repo_url:
+                shutil.rmtree(job.workdir / "_repo", ignore_errors=True)
             self._emit(job, _END_OF_STREAM)
 
 

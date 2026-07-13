@@ -19,15 +19,17 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
     PlainTextResponse,
     RedirectResponse,
+    Response,
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
@@ -35,6 +37,9 @@ from fastapi.templating import Jinja2Templates
 
 from mutagen.agent.llm import LLM
 from mutagen.config import AppConfig
+from mutagen.mutation.report import Mutant, MutationReport
+from mutagen.report import AnalysisReport, analyze_run
+from mutagen.report.pdf import html_to_pdf
 from mutagen.web.auth import is_auth_configured, require_write_auth
 from mutagen.web.jobs import JobRegistry
 from mutagen.web.markdown import render as render_markdown
@@ -257,6 +262,11 @@ def create_app(
         target_py = run_dir / "target.py"
         target_src = target_py.read_text(encoding="utf-8") if target_py.is_file() else ""
 
+        # Optional plain-English focus the user set at submit time. Read from
+        # disk (not from the Job registry) so it survives process restarts.
+        focus_path = run_dir / "focus.txt"
+        focus = focus_path.read_text(encoding="utf-8").strip() if focus_path.is_file() else None
+
         # Chart data: kill rate per round.
         chart_labels = [f"R{r.get('index', i + 1)}" for i, r in enumerate(rounds)]
         chart_kill = [
@@ -270,6 +280,7 @@ def create_app(
                 "run": run_json,
                 "rounds": rounds,
                 "target_src": target_src,
+                "focus": focus,
                 "chart_labels": chart_labels,
                 "chart_kill": chart_kill,
             },
@@ -322,6 +333,197 @@ def create_app(
             raise HTTPException(status_code=404, detail="run.json not found")
         return JSONResponse(data)
 
+    # -- LLM-driven post-run report (on-demand) --------------------------
+
+    def _final_mutation_report(run_dir: Path) -> tuple[MutationReport, str] | None:
+        """Reconstruct the final MutationReport from ``run.json`` + the last
+        round's report; also return a display target name."""
+        run_json = _load_json(run_dir / "run.json")
+        if run_json is None:
+            return None
+        rounds = run_json.get("rounds") or []
+        if not rounds:
+            return None
+        # The final round's report is the authoritative kill-rate snapshot.
+        final_rd = rounds[-1].get("report")
+        if not final_rd:
+            return None
+        survivors = [
+            Mutant(
+                id=m.get("id", ""),
+                file=m.get("file"),
+                line=m.get("line"),
+                status=m.get("status", "survived"),
+                diff=m.get("diff"),
+                kind=m.get("kind", "other"),
+            )
+            for m in (final_rd.get("survivors") or [])
+        ]
+        report = MutationReport(
+            total=final_rd.get("total", 0),
+            killed=final_rd.get("killed", 0),
+            survived=final_rd.get("survived", 0),
+            timeout=final_rd.get("timeout", 0),
+            suspicious=final_rd.get("suspicious", 0),
+            skipped=final_rd.get("skipped", 0),
+            survivors=survivors,
+            disabled_types=final_rd.get("disabled_types", []),
+        )
+        # target_name is the workdir slug minus the trailing ``-<id[:8]>``.
+        target_name = run_dir.name.rsplit("-", 1)[0] or run_dir.name
+        return report, target_name
+
+    def _report_state(run_dir: Path) -> str:
+        """One of ``ready`` (analysis.json exists), ``pending`` (marker file), ``missing``."""
+        if (run_dir / "analysis.json").is_file():
+            return "ready"
+        if (run_dir / "analysis.pending").is_file():
+            return "pending"
+        return "missing"
+
+    def _load_analysis(run_dir: Path) -> AnalysisReport | None:
+        raw = _load_json(run_dir / "analysis.json")
+        if raw is None:
+            return None
+        try:
+            return AnalysisReport.from_dict(raw)
+        except (KeyError, ValueError, TypeError):
+            return None
+
+    def _generate_analysis_in_background(run_dir: Path) -> None:
+        """Runs off the request thread. Any failure leaves ``analysis.error``
+        behind and clears the pending marker so the UI can surface it."""
+        try:
+            got = _final_mutation_report(run_dir)
+            if got is None:
+                raise RuntimeError(
+                    "run has no final round report -- cannot analyze until a run completes"
+                )
+            report, target_name = got
+            llm = llm_factory()
+            # Prefer the model configured on the LLM instance; fall back to a
+            # fresh AppConfig for LLMs that don't carry cfg (FakeLLM in tests).
+            cfg_model = getattr(getattr(llm, "_cfg", None), "llm", None)
+            model_name = (
+                cfg_model.analysis.model if cfg_model else AppConfig().llm.analysis.model
+            )
+            analysis = analyze_run(
+                run_dir,
+                llm=llm,
+                report=report,
+                target_name=target_name,
+                model_name=model_name,
+            )
+            (run_dir / "analysis.json").write_text(
+                json.dumps(analysis.to_dict(), indent=2, default=str), encoding="utf-8",
+            )
+            # Clear any prior error file if this succeeded.
+            err = run_dir / "analysis.error"
+            if err.is_file():
+                err.unlink()
+        except Exception as e:  # noqa: BLE001 -- surface to UI, don't crash server
+            (run_dir / "analysis.error").write_text(
+                f"{type(e).__name__}: {e}", encoding="utf-8",
+            )
+        finally:
+            pending = run_dir / "analysis.pending"
+            if pending.is_file():
+                pending.unlink()
+
+    def _render_report_html(request: Request, run_dir: Path, analysis: AnalysisReport) -> str:
+        """Render the report template to a standalone HTML string (used by
+        both the browser view and the PDF exporter)."""
+        return templates.get_template("report.html").render(
+            {
+                "request": request,
+                "analysis": analysis,
+                "severity_counts": analysis.severity_counts(),
+                "sorted_survivors": analysis.sorted_survivors(),
+                "generated_at_pretty": datetime.fromtimestamp(
+                    analysis.generated_at, tz=timezone.utc,
+                ).strftime("%Y-%m-%d %H:%M UTC"),
+                "fmt_pct": lambda x: f"{x * 100:.1f}%" if x is not None else "-",
+                "fmt_num": lambda x: f"{x:,}" if x is not None else "-",
+                "auth_configured": is_auth_configured,
+            }
+        )
+
+    @app.get("/runs/{name}/report", response_class=HTMLResponse)
+    def run_report(request: Request, name: str) -> HTMLResponse:
+        run_dir = _resolve_run(name)
+        state = _report_state(run_dir)
+        analysis = _load_analysis(run_dir) if state == "ready" else None
+        if analysis is not None:
+            return HTMLResponse(_render_report_html(request, run_dir, analysis))
+        # No analysis yet -- show the "generate" placeholder or a spinner.
+        err_path = run_dir / "analysis.error"
+        error_msg = err_path.read_text(encoding="utf-8") if err_path.is_file() else None
+        run_json = _load_json(run_dir / "run.json")
+        return templates.TemplateResponse(
+            request, "report_pending.html",
+            {
+                "name": name,
+                "state": state,
+                "error": error_msg,
+                "has_run_json": run_json is not None,
+            },
+        )
+
+    @app.post(
+        "/api/runs/{name}/report/generate",
+        dependencies=[Depends(require_write_auth)],
+    )
+    def generate_report(name: str, background_tasks: BackgroundTasks) -> JSONResponse:
+        run_dir = _resolve_run(name)
+        state = _report_state(run_dir)
+        if state == "pending":
+            return JSONResponse({"state": "pending"}, status_code=202)
+        if state == "ready":
+            return JSONResponse({"state": "ready"}, status_code=200)
+        if _final_mutation_report(run_dir) is None:
+            raise HTTPException(
+                status_code=409,
+                detail="run has not finished yet (no final round report to analyze)",
+            )
+        (run_dir / "analysis.pending").write_text(
+            str(time.time()), encoding="utf-8",
+        )
+        # Kick off outside the request thread so the LLM latency doesn't hold
+        # the HTTP response open. BackgroundTasks fires after the response.
+        background_tasks.add_task(_generate_analysis_in_background, run_dir)
+        return JSONResponse({"state": "pending"}, status_code=202)
+
+    @app.get("/api/runs/{name}/report/status")
+    def report_status(name: str) -> JSONResponse:
+        run_dir = _resolve_run(name)
+        state = _report_state(run_dir)
+        payload: dict = {"state": state}
+        err_path = run_dir / "analysis.error"
+        if err_path.is_file():
+            payload["error"] = err_path.read_text(encoding="utf-8")
+        return JSONResponse(payload)
+
+    @app.get("/runs/{name}/report.pdf")
+    def run_report_pdf(request: Request, name: str) -> Response:
+        run_dir = _resolve_run(name)
+        analysis = _load_analysis(run_dir)
+        if analysis is None:
+            raise HTTPException(
+                status_code=404,
+                detail="analysis.json not found -- generate the report first",
+            )
+        html = _render_report_html(request, run_dir, analysis)
+        try:
+            pdf_bytes = html_to_pdf(html)
+        except Exception as e:  # noqa: BLE001 -- surface as 500
+            raise HTTPException(status_code=500, detail=f"pdf render failed: {e}") from e
+        filename = f"{name}_report.pdf"
+        return Response(
+            pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     @app.get("/bench/{name}", response_class=HTMLResponse)
     def bench_detail(request: Request, name: str) -> HTMLResponse:
         run_dir = _resolve_run(name)
@@ -349,15 +551,23 @@ def create_app(
     @app.post("/jobs", dependencies=[Depends(require_write_auth)], response_model=None)
     async def submit_job(
         request: Request,
-        target_source: str = Form(...),
         target_name: str = Form(...),
         max_rounds: int = Form(3),
+        target_source: str | None = Form(None),
+        repo_url: str | None = Form(None),
+        repo_target_path: str | None = Form(None),
+        focus: str | None = Form(None),
     ) -> RedirectResponse | JSONResponse:
         try:
             job = app.state.jobs.submit(
-                target_source=target_source,
                 target_name=target_name,
                 max_rounds=max_rounds,
+                # Empty strings from HTML forms become None so the
+                # exactly-one-of check in submit() reads cleanly.
+                target_source=target_source or None,
+                repo_url=repo_url or None,
+                repo_target_path=repo_target_path or None,
+                focus=focus or None,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e

@@ -1,22 +1,25 @@
 """Central config (pydantic).
 
-Two LLM ROLES, so we can send heavy codegen to a coder-specialist and reserve
-a stronger reasoner for planning:
+Three LLM ROLES, so we can split heavy work by strength profile:
 
-    codegen  -- writes pytest source. Default: Ollama Cloud qwen3-coder:480b-cloud
-                (frontier open-source coder, 256K context).
+    codegen  -- writes pytest source. Default: Ollama Cloud minimax-m3:cloud
+                (MiniMax M3: coding & agentic frontier, 1M context window,
+                Ollama Cloud free tier).
     planner  -- decides which mutant to attack next and which tier/technique
                 to reach for. Default: Gemini 2.5 Pro via litellm.
+    analysis -- post-run report: judges why each survivor lived, rates severity,
+                suggests fixes. Default: Ollama Cloud gpt-oss:120b-cloud
+                (fast open-weight reasoner, cheap on free-tier quota).
 
-Both go through litellm, so any provider can be swapped by editing config or by
-setting env vars (see below) -- no code changes needed.
+All three go through litellm, so any provider can be swapped by editing config or
+by setting env vars (see below) -- no code changes needed.
 
 Env-var overrides (checked at ``AppConfig()`` construction):
-    MUTAGEN_CODEGEN_MODEL / MUTAGEN_PLANNER_MODEL
-    MUTAGEN_CODEGEN_API_BASE / MUTAGEN_PLANNER_API_BASE
-    MUTAGEN_CODEGEN_API_KEY_ENV / MUTAGEN_PLANNER_API_KEY_ENV
-This is the escape hatch for outages: if Gemini is rate-limited, point the
-planner at Ollama Cloud without editing code.
+    MUTAGEN_CODEGEN_MODEL / MUTAGEN_PLANNER_MODEL / MUTAGEN_ANALYSIS_MODEL
+    MUTAGEN_CODEGEN_API_BASE / MUTAGEN_PLANNER_API_BASE / MUTAGEN_ANALYSIS_API_BASE
+    MUTAGEN_CODEGEN_API_KEY_ENV / MUTAGEN_PLANNER_API_KEY_ENV / MUTAGEN_ANALYSIS_API_KEY_ENV
+This is the escape hatch for outages: if any provider is rate-limited, repoint
+that one role without editing code.
 """
 
 from __future__ import annotations
@@ -54,11 +57,15 @@ class LLMConfig(BaseModel):
     codegen: LLMRole = Field(
         default_factory=lambda: _apply_env_overrides(
             LLMRole(
-                model="ollama/qwen3-coder:480b-cloud",
+                model="ollama/minimax-m3:cloud",
                 api_base="https://ollama.com",
                 api_key_env="OLLAMA_API_KEY",
                 temperature=0.2,
-                max_tokens=8192,
+                # 16k, not 8k: reasoner models (minimax-m3, gpt-oss) spend
+                # a large fraction of their output on hidden `<think>` tokens
+                # before emitting code. 8k caused rounds 2-3 to run out of
+                # budget mid-reasoning and return zero test code.
+                max_tokens=16384,
             ),
             "CODEGEN",
         )
@@ -72,6 +79,20 @@ class LLMConfig(BaseModel):
                 max_tokens=2048,
             ),
             "PLANNER",
+        )
+    )
+    analysis: LLMRole = Field(
+        default_factory=lambda: _apply_env_overrides(
+            LLMRole(
+                model="ollama/gpt-oss:120b-cloud",
+                api_base="https://ollama.com",
+                api_key_env="OLLAMA_API_KEY",
+                temperature=0.2,
+                # Analysis returns per-survivor JSON + a prose verdict; 4k
+                # tokens fits comfortably even for reports with 10+ survivors.
+                max_tokens=4096,
+            ),
+            "ANALYSIS",
         )
     )
 

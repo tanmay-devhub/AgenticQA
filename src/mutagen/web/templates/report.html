@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}report — {{ analysis.workdir_name }}{% endblock %}
+{% block body %}
+<p class="breadcrumb"><a href="/runs">runs</a> / <a href="/runs/{{ analysis.workdir_name }}">{{ analysis.workdir_name }}</a> / report</p>
+<h1>Mutation testing report</h1>
+<p class="muted small">
+  target: <strong>{{ analysis.target_name }}</strong>
+  · generated: {{ generated_at_pretty }}
+  · analyst: <code>{{ analysis.model }}</code>
+</p>
+
+<p>
+  <a class="btn" href="/runs/{{ analysis.workdir_name }}/report.pdf">download PDF</a>
+  <a href="/runs/{{ analysis.workdir_name }}">back to artifacts</a>
+</p>
+
+{% if analysis.focus %}
+<div class="focus-info">
+  <div class="label">testing focus (user priority)</div>
+  <div class="focus-body">{{ analysis.focus }}</div>
+</div>
+{% endif %}
+
+<h2>Summary</h2>
+<div class="stat-row">
+  <div class="stat">
+    <div class="label">kill rate</div>
+    <div class="value {% if analysis.kill_rate >= 0.9 %}good{% elif analysis.kill_rate < 0.5 %}bad{% endif %}">{{ fmt_pct(analysis.kill_rate) }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">mutants</div>
+    <div class="value">{{ analysis.total_mutants }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">killed</div>
+    <div class="value good">{{ analysis.killed }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">survived</div>
+    <div class="value {% if analysis.survived > 0 %}bad{% endif %}">{{ analysis.survived }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">timeout</div>
+    <div class="value">{{ analysis.timeout }}</div>
+  </div>
+</div>
+
+<div class="stat-row">
+  <div class="stat">
+    <div class="label">critical</div>
+    <div class="value {% if severity_counts.critical > 0 %}bad{% endif %}">{{ severity_counts.critical }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">high</div>
+    <div class="value">{{ severity_counts.high }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">low</div>
+    <div class="value">{{ severity_counts.low }}</div>
+  </div>
+  <div class="stat">
+    <div class="label">unknown</div>
+    <div class="value muted">{{ severity_counts.unknown }}</div>
+  </div>
+</div>
+
+{% if analysis.verdict %}
+<h2>Verdict</h2>
+<div class="debrief"><p>{{ analysis.verdict }}</p></div>
+{% endif %}
+
+{% if analysis.action_items %}
+<h2>Recommended actions</h2>
+<div class="debrief">
+  <ol>
+    {% for a in analysis.action_items %}
+    <li>{{ a }}</li>
+    {% endfor %}
+  </ol>
+</div>
+{% endif %}
+
+<h2>Survivors ({{ analysis.survivors|length }})</h2>
+{% if not analysis.survivors %}
+<p class="good">No survivors — every mutation the runner produced was caught by the tests.</p>
+{% else %}
+{% for s in sorted_survivors %}
+<div class="survivor">
+  <div class="survivor-head">
+    <span class="pill severity-{{ s.severity }}">{{ s.severity }}</span>
+    <span class="pill category-{{ s.category }}">{{ s.category }}</span>
+    <span class="pill">{{ s.kind }}</span>
+    <code class="survivor-loc">{{ s.file or 'target.py' }}{% if s.line %}:{{ s.line }}{% endif %}</code>
+    <span class="muted small">· mutant <code>{{ s.mutant_id }}</code></span>
+  </div>
+  <p><strong>Why it survived:</strong> {{ s.root_cause }}</p>
+  {% if s.diff %}
+  <details>
+    <summary>mutation diff</summary>
+    <pre class="code diff"><code class="language-diff">{{ s.diff }}</code></pre>
+  </details>
+  {% endif %}
+  {% if s.suggested_test %}
+  <details open>
+    <summary>suggested test</summary>
+    <pre class="code"><code class="language-python">{{ s.suggested_test }}</code></pre>
+  </details>
+  {% endif %}
+  {% if s.fix_hint %}
+  <p class="fix-hint"><strong>Fix hint:</strong> {{ s.fix_hint }}</p>
+  {% endif %}
+</div>
+{% endfor %}
+{% endif %}
+{% endblock %}

@@ -21,18 +21,51 @@
     <div class="label">workdir</div>
     <div class="value small mono">{{ job.workdir_name }}</div>
   </div>
+  <div class="stat">
+    <div class="label">mutmut</div>
+    <div class="value small" id="stat-mutmut">idle</div>
+  </div>
 </div>
 
+{% if job.repo_url %}
+<div class="repo-info">
+  <div><strong>repo:</strong> <code>{{ job.repo_url }}</code></div>
+  <div><strong>target:</strong> <code>{{ job.repo_target_path }}</code></div>
+  <div id="lang-census" class="muted small">languages: detecting…</div>
+</div>
+{% endif %}
+
+{% if job.focus %}
+<div class="focus-info">
+  <div class="label">testing focus</div>
+  <div class="focus-body">{{ job.focus }}</div>
+</div>
+{% endif %}
+
 <h2>live progress</h2>
+
+<div id="mutmut-bar" class="progress-wrap" hidden>
+  <div class="progress-track">
+    <div id="mutmut-fill" class="progress-fill" style="width:0%"></div>
+    <div id="mutmut-percent" class="progress-percent">0%</div>
+  </div>
+  <div id="mutmut-detail" class="progress-detail muted small">
+    round <span id="mutmut-round">1</span> · mutmut warming up…
+  </div>
+</div>
+
 <div id="events" class="event-log">
   <div class="muted small placeholder">waiting for first event…</div>
 </div>
 
 <p>
-  <a href="/runs/{{ job.workdir_name }}">open artifacts →</a>
+  <a href="/runs/{{ job.workdir_name }}" class="lockable">open artifacts →</a>
   {% if job.status in ('queued','running') %}
   <button id="cancel-btn" class="danger">cancel</button>
   {% endif %}
+  <span id="report-links" hidden>
+    <a class="btn" id="report-view" href="/runs/{{ job.workdir_name }}/report">view report</a>
+  </span>
 </p>
 
 {% if job.error %}
@@ -48,6 +81,17 @@ const status = document.getElementById("stat-status");
 const rounds = document.getElementById("stat-rounds");
 const kill = document.getElementById("stat-kill");
 const log = document.getElementById("events");
+// Track which round mutmut is currently running for; the mutmut phase
+// starts before we've seen the round completion event, so we infer from
+// rounds_done + 1 at the start of each mutmut run.
+let currentRound = 1;
+
+// Lock nav + artifacts link while rounds are running; only cancel stays live.
+function setLocked(locked) {
+  document.body.classList.toggle("round-locked", locked);
+}
+// Seed from the server-rendered status so the lock applies before the first SSE tick.
+setLocked({{ 'true' if job.status in ('queued','running') else 'false' }});
 
 function line(msg, cls) {
   // Placeholder lives at the BOTTOM of the log once events prepend on top,
@@ -66,10 +110,17 @@ function pill(text, cls) {
 
 const es = new EventSource(`/api/jobs/${jobId}/events`);
 
+function showReportLinks() {
+  const el = document.getElementById("report-links");
+  if (el) el.hidden = false;
+}
+
 es.addEventListener("snapshot", (e) => {
   const j = JSON.parse(e.data);
   status.innerHTML = pill(j.status, j.status === 'done' ? 'good' : j.status === 'failed' ? 'bad' : '');
   rounds.textContent = `${j.rounds_done}/${j.max_rounds}`;
+  setLocked(j.status === 'queued' || j.status === 'running');
+  if (j.status === 'done') showReportLinks();
 });
 
 es.onmessage = (e) => {
@@ -77,8 +128,69 @@ es.onmessage = (e) => {
   if (ev.type === "started") {
     status.innerHTML = pill("running");
     line("started", "info");
+  } else if (ev.type === "cloning") {
+    line("cloning " + (ev.url || ""), "info");
+  } else if (ev.type === "languages") {
+    const el = document.getElementById("lang-census");
+    if (el) {
+      const summary = Object.entries(ev.languages)
+        .map(([lang, n]) => `${lang}=${n}`).join(", ") || "(none detected)";
+      el.textContent = "languages: " + summary;
+    }
+    line("languages detected: " + JSON.stringify(ev.languages), "info");
+  } else if (ev.type === "target_selected") {
+    line("target: " + ev.path, "info");
+  } else if (ev.type === "mutmut_started") {
+    document.getElementById("stat-mutmut").textContent = "running…";
+    // Reset + reveal the bar for this round's mutmut phase.
+    const bar = document.getElementById("mutmut-bar");
+    const fill = document.getElementById("mutmut-fill");
+    const pct = document.getElementById("mutmut-percent");
+    const detail = document.getElementById("mutmut-detail");
+    bar.hidden = false;
+    bar.classList.remove("progress-complete");
+    fill.style.width = "0%";
+    pct.textContent = "0%";
+    detail.innerHTML = `round <span id="mutmut-round">${(currentRound || 1)}</span> · mutmut warming up…`;
+    line("mutmut started", "info");
+  } else if (ev.type === "mutmut_progress") {
+    const done = (ev.killed || 0) + (ev.survived || 0);
+    const total = ev.total || 0;
+    const percent = total > 0 ? (done / total) * 100 : 0;
+    const stat = document.getElementById("stat-mutmut");
+    stat.textContent = `${done}/${total} (killed=${ev.killed}, survived=${ev.survived})`;
+    // Update the visual bar.
+    document.getElementById("mutmut-fill").style.width = percent.toFixed(1) + "%";
+    document.getElementById("mutmut-percent").textContent = percent.toFixed(0) + "%";
+    document.getElementById("mutmut-detail").innerHTML =
+      `round <span>${currentRound || 1}</span> · killed=<strong>${ev.killed}</strong> ` +
+      `survived=<strong>${ev.survived}</strong> untested=<strong>${ev.untested}</strong> ` +
+      `· elapsed ${(ev.elapsed_s || 0).toFixed(0)}s`;
+    // Coalesce the log line so we don't spam one entry per tick.
+    const first = log.firstChild;
+    const label = `mutmut ${done}/${total}  killed=${ev.killed}  survived=${ev.survived}  untested=${ev.untested}  (${(ev.elapsed_s || 0).toFixed(0)}s)`;
+    if (first && first.dataset && first.dataset.kind === "mutmut") {
+      first.textContent = label;
+    } else {
+      const d = document.createElement("div");
+      d.className = "event";
+      d.dataset.kind = "mutmut";
+      d.textContent = label;
+      const placeholder = log.querySelector(".placeholder");
+      if (placeholder) placeholder.remove();
+      log.prepend(d);
+    }
+  } else if (ev.type === "mutmut_done") {
+    document.getElementById("stat-mutmut").textContent = "done";
+    // Lock the bar at 100% + mark complete so CSS can style it done.
+    document.getElementById("mutmut-fill").style.width = "100%";
+    document.getElementById("mutmut-percent").textContent = "100%";
+    document.getElementById("mutmut-bar").classList.add("progress-complete");
+    line("mutmut done", "info");
   } else if (ev.type === "round") {
     rounds.textContent = `${ev.index}/{{ job.max_rounds }}`;
+    // Next mutmut phase belongs to the next round.
+    currentRound = ev.index + 1;
     const kr = ev.kill_rate == null ? "-" : (ev.kill_rate * 100).toFixed(1) + "%";
     if (ev.kill_rate != null) kill.textContent = kr;
     line(`round ${ev.index} T${ev.tier}  pytest=${ev.pytest_ok ? "ok" : "FAIL"}  killed=${ev.killed}/${ev.total}  survived=${ev.survived}  kill_rate=${kr}${ev.repaired ? "  (repaired)" : ""}`);
@@ -86,14 +198,18 @@ es.onmessage = (e) => {
     status.innerHTML = pill("done", "good");
     if (ev.final_kill_rate != null) kill.textContent = (ev.final_kill_rate * 100).toFixed(1) + "%";
     line(`done: ${ev.stopped_reason}`, "info");
+    setLocked(false);
+    showReportLinks();
     es.close();
   } else if (ev.type === "failed") {
     status.innerHTML = pill("failed", "bad");
     line("failed: " + ev.error, "bad");
+    setLocked(false);
     es.close();
   } else if (ev.type === "cancelled") {
     status.innerHTML = pill("cancelled");
     line("cancelled", "info");
+    setLocked(false);
     es.close();
   }
 };

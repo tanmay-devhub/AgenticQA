@@ -43,6 +43,10 @@ class RoundResult:
     # attempted a repair; useful for the round debrief so the file records
     # what the LLM's first output actually broke on.
     initial_pytest_result: RunResult | None = None
+    # True when the codegen call returned no test functions (typically token
+    # starvation on a reasoner model). pytest_result / report are sentinels
+    # in that case: pytest was never invoked.
+    no_codegen_output: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -51,6 +55,7 @@ class RoundResult:
             "tests_path": str(self.tests_path),
             "pytest_ok": self.pytest_ok,
             "repaired": self.repaired,
+            "no_codegen_output": self.no_codegen_output,
             "elapsed_s": self.elapsed_s,
             "report": self.report.to_dict() if self.report else None,
             "coverage": {
@@ -132,6 +137,29 @@ def _prepare_workdir(target: Path, workdir: Path) -> Path:
     dest = workdir / "target.py"
     shutil.copyfile(target, dest)
     return dest
+
+
+_NO_CODEGEN_STDERR = (
+    "codegen returned no test functions; pytest and mutmut were skipped"
+)
+
+
+def _empty_codegen_round(*, index: int, tier: int, tests_path: Path) -> RoundResult:
+    """Round record for the case where codegen produced no `def test_*`.
+
+    Constructed instead of calling `_run_round`: running pytest against the
+    empty file would silently rediscover the previous round's tests and make
+    the failed round look successful. `pytest_result.returncode == -1` is the
+    sentinel; the debrief and run.json call this out explicitly.
+    """
+    return RoundResult(
+        index=index, tier=tier, tests_path=tests_path,
+        pytest_result=RunResult(
+            returncode=-1, stdout="", stderr=_NO_CODEGEN_STDERR, timed_out=False,
+        ),
+        pytest_ok=False, report=None, elapsed_s=0.0,
+        no_codegen_output=True,
+    )
 
 
 def _persist_round(workdir: Path, r: RoundResult) -> None:
@@ -263,6 +291,19 @@ def _drive_loop(
     t1_source = tier1.generate(llm, target_source=target_src)
     t1_path = workdir / "test_round_1.py"
     t1_path.write_text(t1_source, encoding="utf-8")
+
+    if not tier1.has_tests(t1_source):
+        round1 = _empty_codegen_round(index=1, tier=1, tests_path=t1_path)
+        round1.usage = llm.usage.delta(usage_before)
+        result.rounds.append(round1)
+        _persist_round(workdir, round1)
+        debrief_mod.write_round_body(workdir, round1)
+        result.stopped_reason = (
+            "codegen produced no tests in round 1 "
+            "(raise codegen max_tokens or switch model)"
+        )
+        return result
+
     round1 = _run_round(workdir=workdir, tests_path=t1_path, cfg=cfg, index=1, tier=1, llm=llm)
     round1.usage = llm.usage.delta(usage_before)
     result.rounds.append(round1)
@@ -320,6 +361,19 @@ def _drive_loop(
             t3_used = True
         tests_path = workdir / f"test_round_{i}.py"
         tests_path.write_text(source, encoding="utf-8")
+
+        if not tier1.has_tests(source):
+            r = _empty_codegen_round(index=i, tier=tier, tests_path=tests_path)
+            r.usage = llm.usage.delta(usage_before)
+            result.rounds.append(r)
+            _persist_round(workdir, r)
+            debrief_mod.write_round_body(workdir, r)
+            result.stopped_reason = (
+                f"codegen produced no tests in round {i} "
+                "(raise codegen max_tokens or switch model)"
+            )
+            return result
+
         r = _run_round(workdir=workdir, tests_path=tests_path, cfg=cfg, index=i, tier=tier, llm=llm)
         r.usage = llm.usage.delta(usage_before)
         result.rounds.append(r)

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from mutagen.agent.llm import LLM
 from mutagen.agent.planner import TestSpec
-from mutagen.testgen.tier1 import _strip_fences
+from mutagen.testgen.tier1 import _focus_directive, _read_focus, _strip_fences
 from mutagen.testgen.tier2 import _render_specs
 
 SYSTEM = (
@@ -59,9 +59,9 @@ Rules:
 
 def generate(llm: LLM, *, target_source: Path, specs: list[TestSpec]) -> str:
     source = target_source.read_text(encoding="utf-8")
-    resp = llm.complete(
-        "codegen",
-        system=SYSTEM,
-        user=USER_TEMPLATE.format(source=source, specs=_render_specs(specs)),
+    focus = _read_focus(target_source.parent)
+    user = _focus_directive(focus) + USER_TEMPLATE.format(
+        source=source, specs=_render_specs(specs),
     )
+    resp = llm.complete("codegen", system=SYSTEM, user=user)
     return _strip_fences(resp.text)

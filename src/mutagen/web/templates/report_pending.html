@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}report — {{ name }}{% endblock %}
+{% block body %}
+<p class="breadcrumb"><a href="/runs">runs</a> / <a href="/runs/{{ name }}">{{ name }}</a> / report</p>
+<h1>Mutation testing report</h1>
+
+{% if not has_run_json %}
+<p class="bad">This run hasn't finished yet — reports are generated only from completed runs.</p>
+<p><a href="/runs/{{ name }}">back to artifacts</a></p>
+
+{% elif error %}
+<p class="bad">Report generation failed:</p>
+<pre class="code"><code>{{ error }}</code></pre>
+<form id="regen-form" action="/api/runs/{{ name }}/report/generate" method="post">
+  <button class="btn" type="submit">try again</button>
+</form>
+
+{% elif state == 'pending' %}
+<p class="muted">Analysis in progress — the LLM is judging each surviving mutant. This usually takes 10–60 seconds.</p>
+<div class="progress-wrap">
+  <div class="progress-track">
+    <div class="progress-fill" style="width:100%; animation: pulse 1.4s ease-in-out infinite;"></div>
+  </div>
+</div>
+<p class="muted small">This page will refresh when the report is ready.</p>
+
+{% else %}
+<p>No report yet for this run. Generate one — the analysis LLM (default: <code>gpt-oss:120b-cloud</code>) will:</p>
+<ul>
+  <li>explain why each surviving mutant escaped the tests</li>
+  <li>rate severity (critical / high / low) and category (real gap / equivalent / spec ambiguity)</li>
+  <li>suggest a concrete pytest snippet that would catch it</li>
+  <li>produce an overall verdict and prioritized action list</li>
+</ul>
+<form id="gen-form" action="/api/runs/{{ name }}/report/generate" method="post">
+  <button class="btn" type="submit">generate report</button>
+  <a href="/runs/{{ name }}">back to artifacts</a>
+</form>
+{% endif %}
+
+<style>
+@keyframes pulse {
+  0% { opacity: 0.35; }
+  50% { opacity: 1; }
+  100% { opacity: 0.35; }
+}
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Poll the status endpoint while a generation is running so the page reloads
+// itself when the analysis lands, without the user hitting refresh.
+{% if state == 'pending' %}
+(function() {
+  const name = {{ name|tojson }};
+  const url = `/api/runs/${encodeURIComponent(name)}/report/status`;
+  const tick = async () => {
+    try {
+      const r = await fetch(url, { cache: 'no-store' });
+      if (!r.ok) return;
+      const j = await r.json();
+      if (j.state === 'ready' || j.error) {
+        location.reload();
+        return;
+      }
+    } catch (_) { /* transient errors are fine, keep polling */ }
+    setTimeout(tick, 2000);
+  };
+  setTimeout(tick, 2000);
+})();
+{% endif %}
+
+// The "generate" button posts via fetch so a browser without auth-token
+// still gets a meaningful error rather than a raw 401 page.
+(function() {
+  for (const id of ["gen-form", "regen-form"]) {
+    const f = document.getElementById(id);
+    if (!f) continue;
+    f.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const r = await fetch(f.action, { method: "POST" });
+      if (r.status === 401) {
+        alert("bearer token required (write endpoint)");
+        return;
+      }
+      if (!r.ok && r.status !== 202) {
+        const text = await r.text();
+        alert("generation failed: " + text);
+        return;
+      }
+      location.reload();
+    });
+  }
+})();
+</script>
+{% endblock %}

@@ -164,7 +164,12 @@ def run_mutmut(
 ) -> tuple[MutationReport, RunResult]:
     """Run mutmut in ``workdir`` against ``target_rel`` and return a report."""
     py = _python_exe(backend)
-    runner_cmd = f'"{py}" -m pytest -x --assert=plain'
+    # --timeout=5 kills any single test that runs longer than 5s. Without it,
+    # a mutation that turns a loop bound (e.g. ``low <= high`` -> ``low < high``
+    # in binary_search) into non-terminating code hangs pytest, which hangs
+    # mutmut, which hangs the whole job. 5s is generous for unit tests but
+    # tight enough to cap the worst-case wall clock.
+    runner_cmd = f'"{py}" -m pytest -x --assert=plain --timeout=5'
     args = [
         "run",
         "--paths-to-mutate", target_rel,

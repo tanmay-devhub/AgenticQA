@@ -1,7 +1,7 @@
 # mutagen-qa
 
-**An agentic QA engineer for real code.** Point it at a source file — soon,
-any GitHub repo — and it generates a test suite optimized for **bug-catching
+**An agentic QA engineer for real code.** Point it at a source file (soon,
+any GitHub repo) and it generates a test suite optimized for **bug-catching
 power** (mutation kill rate), not test count.
 
 Ships end-to-end today for **Python**. Multi-language support
@@ -16,7 +16,7 @@ Traditional test-generation tools optimize for line coverage. But 100%
 coverage says nothing about whether the tests would *notice* a real bug.
 Mutation testing measures that directly: inject a small change into the code
 (`>` → `>=`, `+` → `-`, delete a `raise`, …), rerun the suite, and see if
-any test fails. A **survivor** — a mutation the tests missed — is a
+any test fails. A **survivor** (a mutation the tests missed) is a
 bug-shaped gap in coverage. The higher the **kill rate**, the more real
 defects your suite would catch.
 
@@ -62,49 +62,93 @@ Then, on Windows:
 ## Features
 
 ### Core loop
-- **Three-tier test generation** — T1 (happy-path parameterized) → T2
+- **Three-tier test generation**: T1 (happy-path parameterized) → T2
   (boundary / error / negative, driven by classified survivors) → T3
   (Hypothesis property-based, escalation on plateau).
-- **Survivor classifier** — separates *real gaps* from *equivalent
+- **Survivor classifier**: separates *real gaps* from *equivalent
   mutants* and *message-noise*, cached by diff hash so multi-round loops
   never re-pay for the same survivor.
-- **Two-shot repair** — if generated tests fail pytest, the LLM gets two
+- **Two-shot repair**: if generated tests fail pytest, the LLM gets two
   attempts (temperature bumped on the second) to fix its own output
   before the round aborts.
-- **Coverage-guided planning** — uncovered lines from `coverage.json` are
+- **Coverage-guided planning**: uncovered lines from `coverage.json` are
   fed into T2/T3 prompts as targeted hints.
-- **LLM retry-with-backoff** — 3 attempts on rate-limit / timeout /
+- **Optional testing focus**: a plain-English priority the user attaches
+  at submit time (e.g., *"test max_len truncation at boundary values"*)
+  is threaded into every T1/T2/T3 prompt to sharpen where the codegen
+  model spends its budget.
+- **Codegen output validation**: if a round returns no `def test_*`
+  (typical failure mode: reasoning models exhausting `max_tokens` on
+  hidden thinking), the loop halts with a clear reason instead of
+  silently re-running mutmut on the previous round's tests.
+- **LLM retry-with-backoff**: 3 attempts on rate-limit / timeout /
   network errors, fail-fast on permanent errors (auth, bad request).
-- **Provider-agnostic** — swap `codegen` or `planner` provider with a
-  single env var (`MUTAGEN_CODEGEN_MODEL`, `MUTAGEN_PLANNER_MODEL`).
+- **Provider-agnostic**: swap `codegen`, `planner`, or `analysis`
+  provider with a single env var (`MUTAGEN_CODEGEN_MODEL`,
+  `MUTAGEN_PLANNER_MODEL`, `MUTAGEN_ANALYSIS_MODEL`).
 
 ### Interfaces
-- **CLI** — `mutagen run`, `mutagen bench`, `mutagen web`, `mutagen mcp`,
+- **CLI**: `mutagen run`, `mutagen bench`, `mutagen web`, `mutagen mcp`,
   `mutagen version`.
-- **Web dashboard** (`mutagen web`) — new-run form on `/`, live per-round
+- **Web dashboard** (`mutagen web`): new-run form on `/`, live per-round
   progress via SSE, kill-rate chart, generated-test viewer, survivor
   diff browser, per-round debrief pages, benchmark aggregates with
   seeded-bug catch rate. Optional bearer-token auth for deployment
   (`MUTAGEN_WEB_AUTH_TOKEN`).
-- **MCP server** (`mutagen mcp`) — exposes `qa_generate_tests`,
+- **MCP server** (`mutagen mcp`): exposes `qa_generate_tests`,
   `qa_mutation_score`, `qa_run_loop` for Claude Desktop / Cursor / any
   MCP client. stdio, SSE, and streamable-HTTP transports.
-- **Docker sandbox** — set `MUTAGEN_SANDBOX_BACKEND=docker` to run
+- **Docker sandbox**: set `MUTAGEN_SANDBOX_BACKEND=docker` to run
   untrusted target code inside `mutagen-sandbox:latest` (unprivileged
   user, `--network=none`, workdir mounted at `/work`).
-- **Container deployment** — `docker/web/Dockerfile` builds the web app;
+- **Container deployment**: `docker/web/Dockerfile` builds the web app;
   mount `/data/runs` for persistence.
 
 ### Evaluation
-- **Seeded-bug corpus** at `benchmarks/seeded/` — 5 targets across
+- **Seeded-bug corpus** at `benchmarks/seeded/`: 5 targets across
   distinct shapes (parser, numeric edges, branchy validation, string
   state machine, comparison logic), each with hand-crafted bugs and a
   `bugs.json` manifest. The harness swaps each buggy variant into the
   workdir target and re-runs the generated suite so you can measure
   seeded-bug catch rate alongside kill rate.
-- **Ablation harness** — `mutagen bench <root> --ablation` runs each
+- **Ablation harness**: `mutagen bench <root> --ablation` runs each
   target under T1-only / T1+T2 / full-tier and reports whether the
   extra tiers earn their tokens.
+
+---
+
+## Verified performance
+
+The Python pipeline was validated end-to-end against a reference `slugify`
+target: a URL-slugifier covering unicode fold, a hyphen state machine,
+and `max_len` truncation (40 lines of source, 18 mutants generated by
+mutmut). Two configurations, three rounds each, `minimax-m3:cloud`
+codegen + Gemini 2.5 Pro planner:
+
+| Configuration     | Kill rate | Killable killed | Codegen tokens | Wall clock |
+|-------------------|-----------|-----------------|----------------|------------|
+| Default           | 77.8 %    | 14 / 14 (100 %) | 36.5 k         | ~54 s      |
+| Plain-text focus  | 77.8 %    | 14 / 14 (100 %) | 46.8 k         | ~114 s     |
+
+The four remaining survivors in both runs are **equivalent mutants**:
+the target's earlier `.strip("-")` masks each downstream difference, so
+the mutations produce output identical to the original. No test can kill
+them, and the pipeline correctly reached the theoretical ceiling on this
+target.
+
+Notes from the run data:
+
+- The **empty-codegen safeguard** fired zero times on either run; codegen
+  produced valid pytest source in every round for both configurations.
+- **Focus rebalances rather than lifts** the terminal score: T1 spends
+  more of its budget on the flagged edges, but a healthy T2 pass covers
+  the residue in either mode and both runs converge on the same
+  equivalent-mutant floor. Focus's value is prioritization (which
+  mutants die first, useful for early-exit budgets and security-critical
+  paths), not raising the final kill rate.
+- **Repair path exercised**: one T2 round in each configuration produced
+  tests that initially failed pytest and were rescued by the first
+  repair attempt.
 
 ---
 
@@ -112,7 +156,7 @@ Then, on Windows:
 
 Today the pipeline is Python-only. Each language will ship end-to-end
 before the next starts. All six candidates below have production-grade
-mutation tools available — none get skipped:
+mutation tools available. None get skipped:
 
 | Language   | Mutation tool  | Test runner        | Status  |
 |------------|----------------|--------------------|---------|
@@ -134,7 +178,7 @@ per-language progress to the dashboard.
 ## What input looks like today
 
 Any Python file with a docstring on each public function. The docstring is
-the **oracle** — it tells the codegen model what "correct" means.
+the **oracle**: it tells the codegen model what "correct" means.
 
 ```python
 def slugify(text: str, max_len: int = 60) -> str:
@@ -178,7 +222,7 @@ chose to attack them.
 
 ## Configuration
 
-Every knob is an env var — swap providers, sandboxes, and auth without
+Every knob is an env var. Swap providers, sandboxes, and auth without
 editing code:
 
 | Variable                                              | Purpose                                            |
@@ -210,7 +254,7 @@ src/mutagen/
     config.py    central pydantic config (env-var overrides everywhere)
 benchmarks/      target modules + seeded-bug corpus
 docker/          sandbox + web deployment images
-tests/           136 tests for this tool itself
+tests/           194 tests for this tool itself
 ```
 
 Living design doc, decision log, phase-by-phase status, and known caveats:
@@ -222,7 +266,7 @@ Living design doc, decision log, phase-by-phase status, and known caveats:
 
 ```bash
 uv pip install -e ".[dev]"
-pytest -q                          # 136 tests, ~10s on a warm cache
+pytest -q                          # 194 tests, ~8s on a warm cache
 ruff check .
 mypy src
 ```
@@ -233,7 +277,12 @@ Contributions welcome once multi-language support lands.
 
 ## Status
 
-Phase 3 complete: web frontend + MCP + Docker sandbox + ablation harness
-shipped end-to-end. Live-verified against real LLM APIs on the seeded
-corpus and on ad-hoc user-submitted targets. Next: GitHub-repo ingestion
-and JavaScript / TypeScript / Java / C# / C++ pipelines.
+**Python pipeline complete and validated.** Web frontend, MCP server,
+Docker sandbox, ablation harness, and mutation report all shipped
+end-to-end and live-verified against real LLM APIs on the seeded
+corpus and on ad-hoc user-submitted targets. The reference `slugify`
+run reaches the equivalent-mutant ceiling (100 % of killable mutants
+killed) in three rounds.
+
+Next: GitHub-repo ingestion and JavaScript / TypeScript / Java / C# /
+C++ pipelines.

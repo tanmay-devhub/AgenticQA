@@ -1,19 +1,47 @@
 {% extends "base.html" %}
-{% block title %}new run — mutagen{% endblock %}
+{% block title %}start a run — mutagen{% endblock %}
 {% block body %}
 {% if not landing %}<p class="breadcrumb"><a href="/runs">runs</a> / new</p>{% endif %}
 <h1>{% if landing %}start a run{% else %}new run{% endif %}</h1>
-<p class="muted">Paste a Python module below. The docstring on each public function is the oracle mutagen tests against.</p>
 
-<form method="post" action="/jobs" class="stack">
+<div class="tabs" role="tablist">
+  <button type="button" class="tab active" data-mode="paste" role="tab">paste source</button>
+  <button type="button" class="tab" data-mode="repo" role="tab">github repo</button>
+</div>
+
+<form method="post" action="/jobs" class="stack" id="run-form">
   <label>
     <span>display name</span>
     <input name="target_name" required maxlength="80" placeholder="e.g. slugify" />
   </label>
 
+  <fieldset class="mode-panel" data-mode="paste">
+    <label>
+      <span>target source (Python)</span>
+      <textarea name="target_source" rows="16" spellcheck="false" placeholder='"""Turn arbitrary text into a URL-safe slug."""&#10;&#10;def slugify(text: str, max_len: int = 60) -> str:&#10;    """Rules:&#10;        - lowercase, hyphen-separated ASCII.&#10;        - non-str -> TypeError.&#10;    """&#10;    ...&#10;'></textarea>
+    </label>
+  </fieldset>
+
+  <fieldset class="mode-panel" data-mode="repo" hidden>
+    <label>
+      <span>github repo url</span>
+      <input name="repo_url" type="url" placeholder="https://github.com/&lt;owner&gt;/&lt;name&gt;" />
+    </label>
+    <label>
+      <span>target file (relative path inside the repo)</span>
+      <input name="repo_target_path" placeholder="src/mymod/utils.py" />
+    </label>
+    <p class="muted small">
+      Only Python (<code>.py</code>) targets are supported today.
+      JavaScript, TypeScript, Java, C#, and C++ are on the roadmap;
+      language detection runs on every clone so the census is visible either way.
+    </p>
+  </fieldset>
+
   <label>
-    <span>target source (Python)</span>
-    <textarea name="target_source" required rows="18" spellcheck="false" placeholder='"""Turn arbitrary text into a URL-safe slug."""&#10;&#10;def slugify(text: str, max_len: int = 60) -> str:&#10;    """Rules:&#10;        - lowercase, hyphen-separated ASCII.&#10;        - non-str -> TypeError.&#10;    """&#10;    ...&#10;'></textarea>
+    <span>focus (optional)</span>
+    <textarea name="focus" rows="3" spellcheck="true"
+              placeholder="Plain English -- what do you care about testing? e.g. 'edge cases for empty and single-element lists', or 'unicode handling in the slug generator', or 'error paths for negative amounts'. Leave blank for general mutation testing across the whole target."></textarea>
   </label>
 
   <label class="inline">
@@ -26,4 +54,26 @@
   <p class="muted small">Bearer token required. Set <code>Authorization: Bearer &lt;token&gt;</code> in your reverse proxy or use curl/HTTPie directly.</p>
   {% endif %}
 </form>
+
+<script>
+(function () {
+  const tabs = document.querySelectorAll('.tab[data-mode]');
+  const panels = document.querySelectorAll('.mode-panel[data-mode]');
+  const form = document.getElementById('run-form');
+
+  function setMode(mode) {
+    tabs.forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
+    panels.forEach(p => {
+      const active = p.dataset.mode === mode;
+      p.hidden = !active;
+      // Inputs inside the hidden panel must NOT submit -- otherwise the
+      // server sees both target_source AND repo_url and rejects the request.
+      p.querySelectorAll('input, textarea').forEach(el => { el.disabled = !active; });
+    });
+  }
+
+  tabs.forEach(t => t.addEventListener('click', () => setMode(t.dataset.mode)));
+  setMode('paste');  // default
+})();
+</script>
 {% endblock %}
