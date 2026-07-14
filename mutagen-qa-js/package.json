@@ -1,0 +1,33 @@
+{
+  "name": "mutagen-qa-js",
+  "version": "0.0.1",
+  "description": "Agentic QA engineer for JavaScript: mutation-guided test generation.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "mutagen-js": "./bin/mutagen-js.js"
+  },
+  "main": "./src/index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "start": "node ./bin/mutagen-js.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "fast-check": "^3.23.2",
+    "yargs": "^17.7.2"
+  },
+  "peerDependencies": {
+    "@stryker-mutator/core": "^8.5.0"
+  },
+  "peerDependenciesMeta": {
+    "@stryker-mutator/core": {
+      "optional": false
+    }
+  },
+  "devDependencies": {
+    "@stryker-mutator/core": "^8.5.0"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "$comment": "Cross-language: technique hint appended to T2/T3 prompts per dominant mutation kind. Shared by mutagen-qa (Python) and mutagen-qa-js. Update in one place to avoid drift.",
+  "comparison": "boundary tests around the operands (values just below, equal to, and just above the compared boundary)",
+  "arithmetic": "off-by-one and sign-flip inputs that make the arithmetic result observable in the return value",
+  "constant": "inputs that force the exact literal value to matter (pin the constant with equality assertions)",
+  "boolean": "truth-table cases: exercise each branch of the boolean expression with contrasting operand values",
+  "return": "equality assertions on the return value for a spread of inputs, especially the ones that hit each return statement",
+  "keyword": "tests that observe control-flow effects (loop iteration counts, early-exit values, throw-vs-fallthrough)",
+  "call": "arguments and return-value shapes for the mutated call site",
+  "other": "small, targeted example-based tests that pin down the surviving mutation's observable behavior"
+}

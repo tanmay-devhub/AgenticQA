@@ -124,6 +124,9 @@ pit-reports/
 # C# / .NET
 # ===========================================================================
 bin/
+# The JS CLI shim lives at mutagen-qa-js/bin/mutagen-js.js -- must not be
+# swallowed by the broad `bin/` pattern above.
+!mutagen-qa-js/bin/
 obj/
 *.user
 *.suo

@@ -1,0 +1,44 @@
+# --- secrets & local overrides ---
+.env
+.env.local
+.env.*.local
+
+# --- node / npm ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# --- generated run artifacts ---
+# Every workdir the loop writes lives under runs/: target.js, generated test
+# modules, per-round reports, debriefs, classifier cache (.mutagen/), Stryker
+# temp files (.stryker-tmp/) and reports (reports/mutation/), and any cloned
+# repo (_repo/) in repo mode.
+runs/
+
+# Safety nets in case someone runs the loop from a workdir outside runs/.
+.mutagen/
+.stryker-tmp/
+reports/mutation/
+
+# --- test / coverage ---
+coverage/
+.nyc_output/
+*.lcov
+
+# --- editors / IDEs ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- AI assistants & editor-side local state ---
+.claude/
+.cursor/
+.aider*
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+Desktop.ini

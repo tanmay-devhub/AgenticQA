@@ -1,0 +1,13 @@
+{
+  "$comment": "Cross-language taxonomy of mutation kinds emitted into the wire report. Both mutmut (Python) and Stryker (JS) mutation names are mapped into this set. Add here first, then teach each language's classifier to emit the new label.",
+  "kinds": [
+    "constant",
+    "comparison",
+    "boolean",
+    "arithmetic",
+    "return",
+    "keyword",
+    "call",
+    "other"
+  ]
+}
